@@ -71,3 +71,11 @@ GitHub Actions is not configured; the listed checks were run locally. The packag
 41 项自动测试在 Node 和 Magpie Bun 下全部通过。双语文档与源码包含在打包预检中。GitHub Actions 未配置，检查在本地执行。已核实桌面所有权、执行结果与实时流，但未进行截图视觉验收，也不宣称其他桌面版本兼容。
 
 0.2.1 权限修补补充验收：通过已安装 Magpie 插件新建独立验证会话，桌面接管后指定完全访问；任务完成且实际运行权限为 `danger-full-access + never`。已有空闲会话可单独修正下一轮权限，不启动业务任务。默认继承、指定权限的回读核验、忙碌竞争、权限更新丢回执、模式冲突和旧请求兼容均有回归覆盖。这些检查不代表所有连接器或系统授权弹窗都会消失。
+
+## Event-driven completion verification (2026-11-03)
+
+Version 0.0.3 passed syntax checks and all 72 Node tests, including isolated socket integration, durable review, crash recovery, duplicate suppression and configuration preservation.
+
+A live marker-only test in Claude Desktop 4.4212.0 Code, opened normally from the Dock, dispatched through the existing Magpie tools. Claude ended its first response with `DOCK_WAITING`. Native completion then woke the same idle session; Claude read the exact turn once, recorded a passed review, and displayed `DOCK_REVIEW_OK`. No user message or model polling occurred between acceptance and review. The Codex turn returned `DOCK_CODEX_OK` without tool calls or file changes.
+
+The optional terminal Channel route was separately validated with Claude Code 2.1.309. Isolated integration tests cover offline completion and worker crash recovery. These checks do not establish real implementation review quality, physical reboot recovery, managed organization compatibility, or compatibility with every desktop version. Closed sessions recover on resume.

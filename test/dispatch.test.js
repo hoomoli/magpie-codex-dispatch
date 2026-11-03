@@ -241,7 +241,7 @@ test('plugin info and status report the loaded package version without starting 
   const info = JSON.parse(await tool.codex_plugin_info.execute({}));
   assert.equal(info.name, metadata.name);
   assert.equal(info.pluginVersion, metadata.version);
-  assert.equal(metadata.magpie.name, `${metadata.name} v${metadata.version}`);
+  assert.equal(metadata.magpie.name, metadata.name);
   assert.ok(Number.isFinite(Date.parse(info.loadedAt)));
   assert.match(tool.codex_plugin_info.description, new RegExp(`v${metadata.version.replaceAll('.', '\\.')}`));
   assert.equal(f.calls.length, 0);

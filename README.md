@@ -2,9 +2,9 @@
 
 [中文说明](README.zh-CN.md) · [Ownership contract / 控制权规范](docs/ownership.md)
 
-Current version: **0.0.1** — cross-process dispatch locking, crash recovery, safe handoff retries and loaded-version reporting.
+Current version: **0.0.3** — event-driven Claude completion/review channels, cross-process dispatch locking, crash recovery and loaded-version reporting.
 
-For local-directory installs, Magpie hides its separate version badge. The supported `magpie.name` metadata therefore displays `magpie-codex-dispatch v0.0.1` in the installed list; the package and MCP tool names stay unchanged. Update this display name with the package version; the version test checks that they match. The list reflects installed metadata, while the tool below verifies the running host.
+The display name is `magpie-codex-dispatch`; the version belongs in Magpie’s separate version badge. Local-directory installs hide that badge, so use `codex_plugin_info` to verify their loaded version. Git-based installs also show a commit identifier managed by Magpie.
 
 To check the version actually loaded by Magpie, ask Claude to call `codex_plugin_info`, or run:
 
@@ -32,7 +32,7 @@ Codex Desktop owns execution, permissions, approvals and live rendering. Claude'
 Requires macOS, a running Codex desktop app, and Magpie with community plugin tools enabled:
 
 ```sh
-magpie plugin add github:hoomoli/magpie-codex-dispatch#v0.0.1
+magpie plugin add github:hoomoli/magpie-codex-dispatch#v0.0.3
 magpie library mcp agents magpie-codex-dispatch claude
 ```
 
@@ -149,7 +149,7 @@ Sockets must belong to the current user. State directory permissions are `0700`,
 
 ## Verification and development
 
-No npm runtime dependencies or build step. Node 22+ for development; Magpie supplies Bun. File locking requires the macOS system utility `/usr/bin/lockf` with inherited-file-descriptor support; an unavailable utility fails before submission.
+No build step. Runtime dependencies are pinned in package-lock.json (MCP SDK for the Claude channel and Immer for desktop state patches). Run npm ci for local checkout installs. Node 22+ for the channel; Magpie supplies Bun for plugin tools. File locking requires the macOS system utility `/usr/bin/lockf` with inherited-file-descriptor support; an unavailable utility fails before submission.
 
 ```sh
 npm run check
@@ -163,3 +163,7 @@ The probe reads metadata only. Automated tests use temporary sockets/state and c
 Interface reference: [Magpie plugin tools, v0.1.2785](https://github.com/yetone/magpie/blob/v0.1.2785/docs/subsystems/plugin-tools.md). This independent implementation does not vendor proprietary desktop code.
 
 [MIT license](LICENSE).
+
+## Automatic Claude review
+
+For Claude Desktop Code opened from the Dock, run `node src/install-desktop.js` once, then continue dispatching through Magpie. Native async hooks bind the current session and wake Claude for review when Codex finishes, without model polling or a custom launcher. See [Desktop setup and recovery](docs/desktop-notifications.md). The optional terminal [Channel launcher](docs/channels.md) remains supported.

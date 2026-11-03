@@ -1,8 +1,8 @@
 # magpie-codex-dispatch
 
-当前版本：**0.0.1**，包含跨进程派发锁、崩溃恢复、安全交接重试和运行版本查询。
+当前版本：**0.0.3**，新增事件驱动的 Claude 完成通知与检查回执，并包含跨进程派发锁、崩溃恢复、安全交接重试和运行版本查询。
 
-Magpie 对本地目录安装不显示独立版本徽标，因此插件通过官方支持的 `magpie.name` 显示名称，在已安装列表显示 `magpie-codex-dispatch v0.0.1`；包名和 MCP 工具名不变。升版时同步更新显示名称，版本测试会检查二者一致。列表显示安装元数据，下面的工具用于核实宿主实际运行版本。
+显示名称固定为 `magpie-codex-dispatch`，版本使用 Magpie 独立的版本徽标。本地目录安装不显示该徽标，可用 `codex_plugin_info` 核实运行版本；Git 安装还会显示由 Magpie 管理的提交标识。
 
 要确认 Magpie 实际加载了哪个版本，让 Claude 调用 `codex_plugin_info`，或运行：
 
@@ -32,7 +32,7 @@ Claude / 其他 MCP 客户端
 需要 macOS、正在运行的 Codex 桌面，以及支持社区插件工具的 Magpie：
 
 ```sh
-magpie plugin add github:hoomoli/magpie-codex-dispatch#v0.0.1
+magpie plugin add github:hoomoli/magpie-codex-dispatch#v0.0.3
 magpie library mcp agents magpie-codex-dispatch claude
 ```
 
@@ -152,7 +152,7 @@ socket 必须属于当前用户。状态目录权限为 `0700`、文件为 `0600
 
 ## 开发与验证
 
-无 npm 运行时依赖、无需构建。开发使用 Node 22+；Magpie 自带 Bun。文件锁依赖 macOS 系统自带的 `/usr/bin/lockf` 及其继承文件描述符能力；工具不可用时会在提交前报错。
+无需构建。运行依赖已固定在 package-lock.json：MCP SDK 用于 Claude Channel，Immer 用于桌面状态增量。本地目录安装先运行 npm ci；Channel 使用 Node 22+，Magpie 工具使用自带 Bun。文件锁依赖 macOS 系统自带的 `/usr/bin/lockf` 及其继承文件描述符能力；工具不可用时会在提交前报错。
 
 ```sh
 npm run check
@@ -164,3 +164,7 @@ npm run probe -- <thread-uuid>
 只读 probe 不打印对话正文。自动测试使用临时 socket 和状态目录，覆盖路由、忙碌状态、取消、协议异常、丢回执、项目检查及防重复。真实链路及兼容性边界见 [验收记录](docs/verification.md)。
 
 接口参考：[Magpie plugin tools v0.1.2785](https://github.com/yetone/magpie/blob/v0.1.2785/docs/subsystems/plugin-tools.md)。独立实现，不包含桌面应用私有源码。[MIT 许可](LICENSE)。
+
+## 自动回传 Claude 检查
+
+从 Dock 打开的 Claude Desktop Code：在本仓库运行一次 `node src/install-desktop.js`，加载新会话或恢复会话后，继续通过现有 Magpie 工具派发。原生异步 Hook 自动绑定当前会话，在 Codex 完成后唤醒 Claude 检查，无需模型轮询、专门启动命令或 Channel 参数。详见[桌面配置与恢复](docs/desktop-notifications.md)。终端使用的 [Channel 启动器](docs/channels.md) 仍作为可选方案保留。

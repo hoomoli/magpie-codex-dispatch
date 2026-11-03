@@ -5,6 +5,8 @@ import { lstat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { applyPatches, enablePatches } from 'immer';
+enablePatches();
 
 export const versions = Object.freeze({
   initialize: 0,
@@ -21,10 +23,12 @@ const MAX_FRAME = 32 * 1024 * 1024;
 export { DispatchError } from './errors.js';
 
 export class Desktop {
-  constructor({ socketPath = join(homedir(), '.codex', 'ipc', 'ipc.sock'), timeoutMs = 8000, signal } = {}) {
+  constructor({ socketPath = join(homedir(), '.codex', 'ipc', 'ipc.sock'), timeoutMs = 8000, signal, onState, onDisconnect } = {}) {
     this.socketPath = socketPath;
     this.timeoutMs = timeoutMs;
     this.signal = signal;
+    this.onState = onState;
+    this.onDisconnect = onDisconnect;
     this.pending = new Map();
     this.buffer = Buffer.alloc(0);
     this.clientId = 'initializing-client';
@@ -129,7 +133,7 @@ export class Desktop {
       this.fail(new DispatchError('DISCONNECTED', 'Desktop IPC was reset.'));
       return;
     }
-    if (!this.snapshotWaiter || message.type !== 'broadcast' ||
+    if ((!this.snapshotWaiter && !this.onState) || message.type !== 'broadcast' ||
         message.method !== 'thread-stream-state-changed' || message.sourceClientId !== this.owner ||
         message.params?.hostId !== 'local' || message.params?.conversationId !== this.threadId) return;
     if (message.version !== versions['thread-stream-state-changed']) {
@@ -137,6 +141,19 @@ export class Desktop {
       return;
     }
     const change = message.params.change;
+    if (change?.type === 'patches' && this.onState) {
+      if (!this.current || change.baseRevision !== this.current.revision || !Number.isInteger(change.revision) || change.revision <= change.baseRevision || !Array.isArray(change.patches)) {
+        this.fail(new DispatchError('STREAM_GAP', 'Desktop stream lost continuity; reconnect for a fresh snapshot.'));
+        return;
+      }
+      try {
+        const state = applyPatches(this.current.state, change.patches);
+        if (state.id !== this.threadId) throw new Error('Identity changed');
+        this.current = { state, revision: change.revision };
+        this.onState(this.current);
+      } catch { this.fail(new DispatchError('PROTOCOL_MISMATCH', 'Invalid desktop patches.')); }
+      return;
+    }
     if (change?.type !== 'snapshot') return;
     if (change.conversationState?.id !== this.threadId || !Number.isInteger(change.revision)) {
       this.fail(new DispatchError('PROTOCOL_MISMATCH', 'Invalid desktop snapshot.'));
@@ -144,8 +161,12 @@ export class Desktop {
     }
     const waiter = this.snapshotWaiter;
     this.snapshotWaiter = undefined;
-    clearTimeout(waiter.timer);
-    waiter.resolve({ state: change.conversationState, revision: change.revision });
+    this.current = { state: change.conversationState, revision: change.revision };
+    if (waiter) {
+      clearTimeout(waiter.timer);
+      waiter.resolve(this.current);
+    }
+    this.onState?.(this.current);
   }
 
   follow(following) {
@@ -155,6 +176,7 @@ export class Desktop {
   }
 
   fail(error) {
+    const first = !this.failure;
     this.failure ??= error;
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
@@ -169,6 +191,7 @@ export class Desktop {
       this.snapshotWaiter = undefined;
     }
     this.socket?.destroy();
+    if (first) this.onDisconnect?.(this.failure);
   }
 
   close() {
