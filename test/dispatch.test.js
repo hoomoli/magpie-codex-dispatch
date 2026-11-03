@@ -12,7 +12,7 @@ const threadId = '00000000-0000-4000-8000-000000000001';
 const turnId = 'turn-example';
 const command = { threadId, requestId: 'request-0001', prompt: 'Reply OK; do not use tools.' };
 function state(status = 'completed') {
-  return { id: threadId, requests: [], threadRuntimeStatus: { type: status === 'inProgress' ? 'active' : 'idle' },
+  return { id: threadId, currentPermissions: { approvalPolicy: 'on-request', approvalsReviewer: 'user', sandboxPolicy: { type: 'workspaceWrite', networkAccess: false } }, requests: [], threadRuntimeStatus: { type: status === 'inProgress' ? 'active' : 'idle' },
     turnHistory: { history: { entitiesByKey: { tail: { turnId, status, turnStartedAtMs: 100,
       items: [{ type: 'agentMessage', text: 'OK' }] } } } } };
 }
@@ -26,6 +26,7 @@ async function fixture(t, options = {}) {
   const directory = await mkdtemp(join('/tmp', 'mcd-'));
   const socketPath = join(directory, 'ipc.sock');
   const calls = [];
+  let updated = false;
   const sockets = new Set();
   const server = net.createServer(socket => {
     sockets.add(socket); socket.on('close', () => sockets.delete(socket)); socket.on('error', () => {});
@@ -47,6 +48,7 @@ async function fixture(t, options = {}) {
           else if (message.method === 'thread-owner-discovery') reply({});
           else if (options.dropMutation) socket.destroy();
           else if (options.silentMutation) { /* Simulate an accepted command with a lost reply. */ }
+          else if (message.method === 'thread-follower-update-thread-settings') { updated = true; reply({ applied: !options.rejectSettings }); }
           else if (message.method === 'thread-follower-start-turn') reply({ result: { turn: { id: turnId } } });
           else if (message.method === 'thread-follower-steer-turn') reply({ result: { turnId } });
           else reply({ ok: !options.rejectStop, interruptedTurnId: turnId });
@@ -54,7 +56,7 @@ async function fixture(t, options = {}) {
           if (options.badFrame) { socket.write(Buffer.from([255, 255, 255, 255])); continue; }
           send({ type: 'broadcast', method: 'thread-stream-state-changed', version: options.version ?? 11,
             sourceClientId: 'owner', params: { hostId: 'local', conversationId: threadId,
-              change: { type: 'snapshot', revision: 3, conversationState: state(options.status) } } });
+              change: { type: 'snapshot', revision: 3, conversationState: options.snapshot ? options.snapshot(updated) : state(options.status) } } });
         }
       }
     });
@@ -171,11 +173,81 @@ test('unknown history is not success and assistant output is bounded', () => {
 
 test('plugin exposes serializable tool definitions and validates mutation input', async () => {
   const { tool } = await plugin();
-  assert.equal(Object.keys(tool).length, 10);
+  assert.equal(Object.keys(tool).length, 11);
   for (const definition of Object.values(tool)) {
     assert.equal(JSON.parse(JSON.stringify(definition.args)).type, 'object');
   }
   for (const name of ['codex_dispatch', 'codex_followup', 'codex_stop', 'codex_create_task', 'codex_handoff']) {
     await assert.rejects(tool[name].execute({ threadId: 'invalid' }), /INVALID_ARGUMENT/);
   }
+});
+
+const fullPermissions = { approvalPolicy: 'never', approvalsReviewer: 'user', sandboxPolicy: { type: 'dangerFullAccess' }, activePermissionProfile: { id: ':danger-full-access' } };
+const fullCommand = { ...command, permissionMode: 'full-access' };
+function permissionSnapshot(updated) {
+  return { ...state(), ...(updated ? { latestThreadSettings: fullPermissions } : {}) };
+}
+test('explicit full access is applied, freshly verified, and pinned to the actual turn', async t => {
+  const f = await fixture(t, { snapshot: permissionSnapshot });
+  const result = await f.run('dispatch', fullCommand);
+  assert.equal(result.permissions.mode, 'full-access');
+  const [update, start] = mutations(f.calls);
+  assert.equal(update.method, 'thread-follower-update-thread-settings');
+  assert.equal(update.version, 2);
+  assert.deepEqual(update.params.threadSettings, { permissions: ':danger-full-access', approvalPolicy: 'never', approvalsReviewer: 'user' });
+  assert.equal(start.params.turnStart.request.permissions, ':danger-full-access');
+  assert.equal(start.params.turnStart.request.approvalPolicy, 'never');
+  const status = await f.run('status', { threadId });
+  assert.equal(status.permissions.mode, 'ask-for-approval');
+  assert.equal(status.nextTurnPermissions.mode, 'full-access');
+  await assert.rejects(f.run('dispatch', { ...command, permissionMode: 'read-only' }), { code: 'REQUEST_ID_CONFLICT' });
+  assert.equal((await createDispatcher(f.settings)('dispatch', fullCommand)).replayed, true);
+  assert.equal(mutations(f.calls).length, 2);
+});
+test('default inheritance preserves full access and old receipt fingerprints', async t => {
+  const f = await fixture(t, { snapshot: () => ({ ...state(), currentPermissions: fullPermissions }) });
+  assert.equal((await f.run('dispatch', command)).permissions.mode, 'full-access');
+  assert.equal(mutations(f.calls).length, 1);
+  assert.equal(mutations(f.calls)[0].params.turnStart.request.permissions, undefined);
+  assert.equal((await f.run('dispatch', { ...command, permissionMode: 'inherit' })).replayed, true);
+});
+test('settings acknowledgement without effective readback never starts a task', async t => {
+  const f = await fixture(t);
+  for (let i = 0; i < 2; i++) await assert.rejects(f.run('dispatch', fullCommand), { code: 'PERMISSION_MISMATCH' });
+  assert.ok(mutations(f.calls).every(c => c.method === 'thread-follower-update-thread-settings'));
+});
+test('a rejected permission update never falls back to sending the task', async t => {
+  const f = await fixture(t, { rejectSettings: true });
+  await assert.rejects(f.run('dispatch', fullCommand), { code: 'PERMISSION_UPDATE_UNCONFIRMED' });
+  assert.equal(mutations(f.calls).length, 1);
+});
+test('permission-only operation is idle-only, verified, and starts no turn', async t => {
+  const f = await fixture(t, { snapshot: permissionSnapshot });
+  const request = { threadId, requestId: command.requestId, permissionMode: 'full-access' };
+  assert.equal((await f.run('permissions', request)).completed, true);
+  assert.equal((await createDispatcher(f.settings)('permissions', request)).replayed, true);
+  assert.equal(mutations(f.calls).length, 1);
+  const busy = await fixture(t, { status: 'inProgress' });
+  await assert.rejects(busy.run('permissions', request), { code: 'THREAD_NOT_IDLE' });
+  assert.equal(mutations(busy.calls).length, 0);
+});
+test('lost permission-only reply remains unknown across restart', async t => {
+  const f = await fixture(t, { dropMutation: true });
+  const request = { threadId, requestId: command.requestId, permissionMode: 'full-access' };
+  await assert.rejects(f.run('permissions', request), { code: 'OUTCOME_UNKNOWN' });
+  await assert.rejects(createDispatcher(f.settings)('permissions', request), { code: 'OUTCOME_UNKNOWN' });
+  assert.equal(mutations(f.calls).length, 1);
+});
+test('a thread becoming busy after settings update is not dispatched', async t => {
+  const f = await fixture(t, { snapshot: updated => ({ ...permissionSnapshot(updated), ...(updated ? { threadRuntimeStatus: { type: 'active' } } : {}) }) });
+  await assert.rejects(f.run('dispatch', fullCommand), { code: 'THREAD_NOT_IDLE' });
+  assert.equal(mutations(f.calls).length, 1);
+});
+test('unknown effective permissions and conflicting mode arguments fail before dispatch', async t => {
+  const f = await fixture(t, { snapshot: () => ({ ...state(), currentPermissions: {} }) });
+  await assert.rejects(f.run('dispatch', command), { code: 'PERMISSION_MISMATCH' });
+  await assert.rejects(f.run('dispatch', { ...fullCommand, sandbox: 'workspace-write' }), { code: 'INVALID_ARGUMENT' });
+  await assert.rejects(f.run('permissions', { ...command, permissionMode: 'inherit' }), { code: 'INVALID_ARGUMENT' });
+  await assert.rejects(f.run('followup', { ...fullCommand, turnId }), { code: 'INVALID_ARGUMENT' });
+  assert.equal(mutations(f.calls).length, 0);
 });

@@ -1,4 +1,6 @@
+import { DispatchError } from './errors.js';
 import net from 'node:net';
+import { permissionSummary, nextPermissions } from './permissions.js';
 import { lstat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
@@ -8,6 +10,7 @@ export const versions = Object.freeze({
   initialize: 0,
   'thread-owner-discovery': 1,
   'thread-follower-start-turn': 2,
+  'thread-follower-update-thread-settings': 2,
   'thread-follower-steer-turn': 1,
   'thread-follower-interrupt-turn': 4,
   'thread-stream-following-changed': 1,
@@ -15,9 +18,7 @@ export const versions = Object.freeze({
 });
 const MAX_FRAME = 32 * 1024 * 1024;
 
-export class DispatchError extends Error {
-  constructor(code, message) { super(message); this.code = code; }
-}
+export { DispatchError } from './errors.js';
 
 export class Desktop {
   constructor({ socketPath = join(homedir(), '.codex', 'ipc', 'ipc.sock'), timeoutMs = 8000, signal } = {}) {
@@ -191,5 +192,5 @@ export function summarize({ state, revision }, turnId) {
     turnId: turn?.turnId ?? null, status: turn ? (known.has(turn.status) ? turn.status : 'unknown') : 'unknown',
     turnFound: Boolean(turn), pendingRequests: Array.isArray(state.requests) ? state.requests.length : null,
     output: output.slice(-16000), outputTruncated: output.length > 16000,
-    hasError: Boolean(turn?.error), threadUrl: `codex://threads/${state.id}` };
+    hasError: Boolean(turn?.error), permissions: permissionSummary(state.currentPermissions), nextTurnPermissions: nextPermissions(state), threadUrl: `codex://threads/${state.id}` };
 }

@@ -78,7 +78,7 @@ export class AppServer {
     return this;
   }
   async initialize(experimentalApi) {
-    const result = await this.request('initialize', { clientInfo: { name: 'magpie_codex_dispatch', version: '0.2.0' }, capabilities: { experimentalApi } });
+    const result = await this.request('initialize', { clientInfo: { name: 'magpie_codex_dispatch', version: '0.2.1' }, capabilities: { experimentalApi } });
     this.input.write(JSON.stringify({ method: 'initialized', params: {} }) + '\n');
     return result;
   }

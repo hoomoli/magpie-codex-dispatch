@@ -52,8 +52,9 @@ Plugin-specific MCP exposes these names. The combined endpoint prefixes them wit
 | `codex_handoff` | `threadId`, `requestId`, optional `sourceEndpoint` | Release one idle Companion thread, wait for unload and attach desktop |
 | `codex_recover_creation` | `requestId`, `threadId` | Verify source marker/project/cwd and bind an uncertain creation; does not dispatch |
 | `codex_operation_status` | `requestId` | Read saved create/handoff progress without advancing it |
-| `codex_status` | `threadId`, optional `turnId` | Fresh execution snapshot and up to 16,000 characters of assistant output |
-| `codex_dispatch` | `threadId`, `prompt`, `requestId` | Start the next turn in an idle native thread |
+| `codex_set_permissions` | `threadId`, `requestId`, explicit `permissionMode` | Set and verify the next-turn permissions of an idle thread; starts no task |
+| `codex_status` | `threadId`, optional `turnId` | Fresh execution snapshot, current/next-turn permissions and up to 16,000 characters of assistant output |
+| `codex_dispatch` | `threadId`, `prompt`, `requestId`, optional `permissionMode` | Start the next turn in an idle native thread |
 | `codex_followup` | `threadId`, `turnId`, `prompt`, `requestId` | Steer an active turn |
 | `codex_stop` | `threadId`, `turnId`, `requestId` | Request cancellation of the specified active turn |
 
@@ -64,14 +65,33 @@ Plugin-specific MCP exposes these names. The combined endpoint prefixes them wit
   "requestId": "example-task-0001",
   "projectName": "my-project",
   "title": "Example task",
-  "sandbox": "read-only",
+  "permissionMode": "read-only",
   "prompt": "Reply exactly OK. Do not use tools or modify files."
 }
 ```
 
 Select an exact unique `projectName` or canonical `projectId` from `codex_projects`. Desktop UI project IDs can differ from backend IDs. One project root supplies the working directory; multiple roots require an explicit `cwd` inside a root. An explicit absolute `cwd` without a project creates a projectless thread. No implicit current-project default is used. Paths are resolved through filesystem aliases and checked before creation. This creates a **conversation**, not a new project.
 
-Optional `title` is limited to 160 characters; its default is `Magpie task`, so empty threads are named before the creator exits. `sandbox` is `workspace-write` by default or `read-only`; approval policy is `on-request`. The creation response and native workspace are checked before dispatch. Follow-up turns inherit thread settings.
+Optional `title` is limited to 160 characters; its default is `Magpie task`, so empty threads are named before the creator exits. The creation response and native workspace are checked before dispatch.
+
+### Permission modes
+
+`codex_create_task` and `codex_dispatch` accept `permissionMode`:
+
+| Mode | Behavior |
+| --- | --- |
+| `inherit` (default) | Preserve the native thread's selected settings, including Full Access when already selected |
+| `read-only` | Read-only sandbox with `on-request` approvals |
+| `ask-for-approval` | Workspace-write sandbox with `on-request` approvals |
+| `full-access` | Unrestricted filesystem/network access with `never` shell approvals; requires explicit user authorization |
+
+The caller must pass the user's requested mode explicitly when creating a task with a particular permission level. A selection in a different thread is not authorization for every new task. Legacy `sandbox: read-only/workspace-write` maps to the corresponding explicit mode; conflicting fields are rejected. Version 0.2.0 forced workspace-write/on-request by default; 0.2.1 inherits instead.
+
+After native attachment, the plugin applies explicit modes to the idle thread, reads a fresh snapshot, and pins them to the start request. An unconfirmed update or permission mismatch prevents task submission. The temporary creator's permissions alone are insufficient because native takeover can replace them. Follow-up/stop never change permissions.
+
+To correct an existing idle thread without starting work, call `codex_set_permissions` with its `threadId`, a unique `requestId`, and `permissionMode: "full-access"` after explicit user authorization. `codex_status.permissions` describes the loaded runtime's current/last-turn permissions; `nextTurnPermissions` describes settings for the next turn. Neither field is a historical permission lookup for an arbitrary `turnId`. A settings-only update may leave these fields different until a new turn begins. Receipts are historical acknowledgements; read status for current settings.
+
+Permission changes persist even if a later preflight fails; inspect status before retrying. The idle check and update are separate private IPC calls: avoid concurrent UI/client submissions or permission changes. Full Access governs shell sandbox/approvals, not every connector authorization, macOS permission, or task clarification.
 
 ### Retry and completion
 

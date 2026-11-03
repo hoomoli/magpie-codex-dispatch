@@ -1,6 +1,6 @@
 # Verification / 验收记录
 
-Local acceptance on **2026-11-03**, release **0.2.0**. No credentials, private conversations, machine paths or raw runtime logs are published here.
+Local acceptance on **2026-11-03**, release **0.2.1**. No credentials, private conversations, machine paths or raw runtime logs are published here.
 
 ## Environment
 
@@ -17,8 +17,8 @@ Local acceptance on **2026-11-03**, release **0.2.0**. No credentials, private c
 
 | Check | Observed result |
 | --- | --- |
-| Syntax and automated tests | `npm run check`; 31/31 tests passed under Node and Magpie's Bun |
-| Installed Magpie host | Local checkout installed; 10 plugin tools loaded; plugin-specific HTTP MCP enabled for Claude through Library |
+| Syntax and automated tests | `npm run check`; 41/41 tests passed under Node and Magpie's Bun |
+| Installed Magpie host | Local checkout installed; 11 plugin tools loaded; plugin-specific HTTP MCP enabled for Claude through Library |
 | Actual Claude → Magpie → native desktop | Claude Code connected to the installed gateway, selected a project, created a thread, retried pending attachment, dispatched, and observed `inProgress` then `completed`; exact harmless marker matched |
 | Idempotency | Claude repeated the accepted create request; `replayed: true`, same thread ID and turn ID |
 | Project targeting | Two existing projects tested; backend project ID and canonical workspace path matched. macOS path casing/aliases were resolved |
@@ -29,6 +29,8 @@ Local acceptance on **2026-11-03**, release **0.2.0**. No credentials, private c
 | Unpersisted empty-thread boundary | An immediate lost creation reply before naming left an unreadable/unlisted thread. Recovery refused; no duplicate was created. This upstream ambiguity remains explicit |
 | Installed Magpie active-thread controls | Busy dispatch rejected with `THREAD_NOT_IDLE`; follow-up accepted; stop accepted for the expected turn; final state `interrupted` |
 | Native live stream | During the final control check: 2 snapshots, 5 patches, 0 revision gaps |
+| Permission propagation (0.2.1) | Installed Magpie create dispatched a harmless marker task after native takeover; completion and actual runtime danger-full-access/never permissions confirmed |
+| Permission correction (0.2.1) | Installed settings-only tool corrected an existing idle thread; next-turn Full Access verified without starting a task |
 
 The follow-up test initially exposed a missing `restoreMessage.context` field. The transport was corrected, its regression assertion added, and the installed Magpie control check passed afterward.
 
@@ -48,4 +50,6 @@ GitHub Actions is not configured; the listed checks were run locally. The packag
 
 最终安装态验收中，忙碌会话拒绝第二个任务，补充指令成功，中断指定轮次成功，最终为 `interrupted`；原生流观察到 2 个快照、5 个增量，无版本序列缺口。补充指令实测暴露的恢复上下文缺失已修复并增加回归断言。
 
-31 项自动测试在 Node 和 Magpie Bun 下全部通过。双语文档与源码包含在打包预检中。GitHub Actions 未配置，检查在本地执行。已核实桌面所有权、执行结果与实时流，但未进行截图视觉验收，也不宣称其他桌面版本兼容。
+41 项自动测试在 Node 和 Magpie Bun 下全部通过。双语文档与源码包含在打包预检中。GitHub Actions 未配置，检查在本地执行。已核实桌面所有权、执行结果与实时流，但未进行截图视觉验收，也不宣称其他桌面版本兼容。
+
+0.2.1 权限修补补充验收：通过已安装 Magpie 插件新建独立验证会话，桌面接管后指定完全访问；任务完成且实际运行权限为 `danger-full-access + never`。已有空闲会话可单独修正下一轮权限，不启动业务任务。默认继承、指定权限的回读核验、忙碌竞争、权限更新丢回执、模式冲突和旧请求兼容均有回归覆盖。这些检查不代表所有连接器或系统授权弹窗都会消失。

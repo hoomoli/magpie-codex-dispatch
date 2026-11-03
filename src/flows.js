@@ -1,3 +1,4 @@
+import { requestedMode, permissionSettings } from './permissions.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { withServer } from './rpc.js';
@@ -11,15 +12,17 @@ function validate(operation, args) {
   requestKey(args?.requestId);
   if (operation === 'handoff') validateThread(args.threadId);
   if (operation === 'create') {
+    requestedMode(args);
     if (typeof args.prompt !== 'string' || !args.prompt.trim() || Buffer.byteLength(args.prompt) > 65536) throw new DispatchError('INVALID_ARGUMENT', 'prompt must contain 1-65536 UTF-8 bytes.');
     if (args.title !== undefined && (typeof args.title !== 'string' || !args.title.trim() || args.title.length > 160)) throw new DispatchError('INVALID_ARGUMENT', 'title must contain 1-160 characters.');
-    if (args.sandbox !== undefined && !['read-only', 'workspace-write'].includes(args.sandbox)) throw new DispatchError('INVALID_ARGUMENT', 'sandbox must be read-only or workspace-write.');
     for (const key of ['projectId', 'projectName', 'cwd']) if (args[key] !== undefined && (typeof args[key] !== 'string' || !args[key])) throw new DispatchError('INVALID_ARGUMENT', `${key} must be a nonempty string.`);
   }
 }
 function fingerprint(operation, args) {
   const keys = operation === 'create' ? ['prompt', 'title', 'projectId', 'projectName', 'cwd', 'sandbox'] : ['threadId', 'sourceEndpoint'];
-  return digest(JSON.stringify([operation, ...keys.map(key => args[key] ?? null)]));
+  const values = [operation, ...keys.map(key => args[key] ?? null)];
+  if (operation === 'create' && args.permissionMode !== undefined) values.push(args.permissionMode);
+  return digest(JSON.stringify(values));
 }
 function publicState(state) {
   const { fingerprint, marker, source, projectVerified, ...result } = state;
@@ -112,7 +115,7 @@ export function createFlows(options = {}) {
             checkAbort();
             await save({ phase: 'creating' });
             const { thread } = await client.request('thread/start', { cwd: project.cwd, projectId: project.projectId,
-              ephemeral: false, historyMode: 'paginated', sandbox: args.sandbox ?? 'workspace-write', approvalPolicy: 'on-request', threadSource: state.marker });
+              ephemeral: false, historyMode: 'paginated', ...permissionSettings(requestedMode(args)), threadSource: state.marker });
             validateThread(thread?.id);
             await save({ threadId: thread.id, phase: 'thread_created' });
             if (thread.cwd !== project.cwd || (thread.projectId ?? null) !== project.projectId) {
@@ -159,8 +162,8 @@ export function createFlows(options = {}) {
       if (desktop.cwd && desktop.cwd !== state.cwd) throw new DispatchError('PROJECT_MISMATCH', 'Desktop attached to a different workspace. Nothing was dispatched.');
       await save({ phase: 'dispatching', reason: null });
       try {
-        const receipt = await dispatch('dispatch', { threadId: state.threadId, prompt: args.prompt, requestId: `flow_${requestKey(args.requestId)}` }, { abort });
-        await save({ phase: 'accepted', accepted: true, completed: false, turnId: receipt.turnId, owner: 'desktop' });
+        const receipt = await dispatch('dispatch', { threadId: state.threadId, prompt: args.prompt, requestId: `flow_${requestKey(args.requestId)}`, ...(args.permissionMode !== undefined ? { permissionMode: args.permissionMode } : args.sandbox !== undefined ? { sandbox: args.sandbox } : {}) }, { abort });
+        await save({ phase: 'accepted', accepted: true, completed: false, turnId: receipt.turnId, owner: 'desktop', permissions: receipt.permissions });
       } catch (error) {
         await save({ phase: error.code === 'OUTCOME_UNKNOWN' ? 'dispatch_unknown' : 'waiting_dispatch', reason: error.code ?? 'DISPATCH_FAILED' });
         if (error.code !== 'OUTCOME_UNKNOWN') throw error;

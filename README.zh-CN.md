@@ -52,6 +52,7 @@ Magpie 会把此插件的 HTTP MCP 配置写入 Claude。新开 Claude 会话加
 | `codex_handoff` | `threadId`、`requestId`，可选 `sourceEndpoint` | 释放一个空闲 Companion 会话并等桌面接管 |
 | `codex_recover_creation` | `requestId`、`threadId` | 校验唯一来源标记、项目和目录，恢复待确认创建；不派发 |
 | `codex_operation_status` | `requestId` | 只读持久化进度，不推进流程 |
+| `codex_set_permissions` | `threadId`、`requestId`、明确的 `permissionMode` | 修改并核验空闲会话的下一轮权限，不启动任务 |
 | `codex_status` | `threadId`，可选 `turnId` | 获取实时状态及最多 16,000 字符的助手输出 |
 | `codex_dispatch` | `threadId`、`prompt`、`requestId` | 在空闲原生会话开始下一轮 |
 | `codex_followup` | 再加 `turnId` | 向进行中的轮次补充指令 |
@@ -64,14 +65,33 @@ Magpie 会把此插件的 HTTP MCP 配置写入 Claude。新开 Claude 会话加
   "requestId": "example-task-0001",
   "projectName": "my-project",
   "title": "Example task",
-  "sandbox": "read-only",
+  "permissionMode": "read-only",
   "prompt": "Reply exactly OK. Do not use tools or modify files."
 }
 ```
 
 使用 `codex_projects` 返回的唯一 `projectName` 或真实 `projectId`。桌面界面的项目 ID 可能与后端不同，不能混用。项目只有一个根目录时自动选取；多个根目录必须提供位于其范围内的 `cwd`。只提供明确的绝对 `cwd`，则创建不归属项目的会话；不会默认塞进当前项目。目录会解析真实路径再检查归属。这里创建的是**会话，不是新项目**。
 
-`title` 最多 160 字符，不填则用 `Magpie task`，确保空会话写入名称。`sandbox` 默认 `workspace-write`，也可选 `read-only`；审批策略为 `on-request`。创建结果和桌面目录经过核实后才派发，后续轮次继承会话设置。
+`title` 最多 160 字符，不填则用 `Magpie task`，确保空会话写入名称。创建结果和桌面目录经过核实后才派发。
+
+### 权限模式
+
+`codex_create_task` 和 `codex_dispatch` 支持 `permissionMode`：
+
+| 模式 | 行为 |
+| --- | --- |
+| `inherit`（默认） | 保留原生会话当前选定的权限；已选择完全访问时继续继承 |
+| `read-only` | 只读沙箱，`on-request` 审批 |
+| `ask-for-approval` | 工作区可写沙箱，`on-request` 审批 |
+| `full-access` | 文件系统和网络完全访问，`never` shell 审批；必须有用户明确授权 |
+
+用户要求特定权限的新任务，Claude 应明确传递对应模式。其他会话的权限选择不代表授权所有新任务完全访问。旧参数 `sandbox: read-only/workspace-write` 映射到对应明确模式；与 `permissionMode` 冲突时拒绝。0.2.0 默认强制工作区可写并按需审批；0.2.1 改为继承。
+
+桌面接管后，插件对空闲会话应用明确模式，重新读取快照核验，并将指定权限带入启动请求。更新未确认或权限不符时不发送任务。仅设置临时创建进程不够，因为桌面接管可能替换权限。补充指令和停止操作不会修改权限。
+
+修正已有空闲会话时，调用 `codex_set_permissions`，传入 `threadId`、唯一 `requestId` 和明确授权的模式，不会启动任务。`codex_status.permissions` 表示已加载运行时当前或上一轮的权限，`nextTurnPermissions` 表示下一轮设置；它们不是任意历史 `turnId` 的权限查询。只改设置、尚未开始新轮次时，两者可能不同。回执是历史确认，当前设置应重新查询状态。
+
+如果权限已更新，但后续检查失败，设置仍会保留；重试前先查状态。检查空闲和更新设置是两个私有 IPC 调用，应避免桌面与其他客户端同时提交或改权限。完全访问控制 shell 沙箱和审批，不代表取消所有连接器授权、macOS 权限弹窗或任务澄清。
 
 ### 等待、重试和完成
 

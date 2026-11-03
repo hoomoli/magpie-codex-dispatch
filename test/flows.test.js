@@ -13,7 +13,7 @@ const args = { requestId: 'test-create-0001', projectName: 'demo', prompt: 'priv
 async function fixture(t, overrides = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'mcd-flow-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const events = []; let created; let attached = false;
+  const events = []; const starts = []; const dispatches = []; let created; let attached = false;
   const options = {
     stateDirectory: dir,
     resolveProject: async () => ({ cwd: dir, projectId: 'project', projectName: 'demo' }),
@@ -22,6 +22,7 @@ async function fixture(t, overrides = {}) {
       try { return await fn({ request: async (method, params) => {
         events.push(method);
         if (method === 'thread/start') {
+          starts.push(params);
           created = { id: threadId, cwd: dir, projectId: 'project', threadSource: params.threadSource };
           if (overrides.loseCreation) throw new DispatchError('RPC_TIMEOUT', 'lost creation reply');
           return { thread: created };
@@ -34,10 +35,10 @@ async function fixture(t, overrides = {}) {
     desktopState: async () => { if (!attached) throw new DispatchError('NO_OWNER', 'unattached'); return { owner: 'desktop', cwd: dir }; },
     writerPids: async () => [],
     openThread: async () => { events.push('open'); attached = true; },
-    dispatch: async () => { events.push('dispatch'); return { turnId: 'turn-test' }; },
+    dispatch: async (_operation, request) => { dispatches.push(request); events.push('dispatch'); return { turnId: 'turn-test' }; },
     ...overrides,
   };
-  return { dir, events, options, run: createFlows(options) };
+  return { dir, events, starts, dispatches, options, run: createFlows(options) };
 }
 test('creation exits its server before desktop dispatch; restart retry creates and sends once', async t => {
   const f = await fixture(t);
@@ -140,4 +141,25 @@ test('crash after saving ID cannot skip project validation on resume', async t =
   const changed = createFlows({ ...f.options, server: async (_options, fn) => fn({ request: async () => ({ thread: { id: threadId, cwd: f.dir, projectId: 'wrong-project', threadSource: state.marker } }) }) });
   await assert.rejects(changed('create', args), { code: 'PROJECT_MISMATCH' });
   assert.equal(f.events.filter(e => e === 'dispatch').length, 1);
+});
+
+test('creation carries explicit permissions through creator and native dispatch', async t => {
+  const f = await fixture(t);
+  await f.run('create', { ...args, permissionMode: 'full-access' });
+  assert.equal(f.starts[0].permissions, ':danger-full-access');
+  assert.equal(f.starts[0].approvalPolicy, 'never');
+  assert.equal(f.dispatches[0].permissionMode, 'full-access');
+  await assert.rejects(f.run('create', { ...args, permissionMode: 'read-only' }), { code: 'REQUEST_ID_CONFLICT' });
+});
+test('default creation inherits desktop settings; legacy sandbox retains compatible child receipt identity', async t => {
+  const f = await fixture(t);
+  await f.run('create', args);
+  assert.equal(f.starts[0].permissions, undefined);
+  assert.equal(f.starts[0].approvalPolicy, undefined);
+  assert.equal(f.dispatches[0].permissionMode, undefined);
+  const legacy = await fixture(t);
+  await legacy.run('create', { ...args, sandbox: 'read-only' });
+  assert.equal(legacy.starts[0].permissions, ':read-only');
+  assert.equal(legacy.dispatches[0].sandbox, 'read-only');
+  assert.equal(legacy.dispatches[0].permissionMode, undefined);
 });

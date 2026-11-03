@@ -1,3 +1,4 @@
+import { requestedMode, permissionSettings, assertPermissions, nextPermissions } from './permissions.js';
 import { mkdir, lstat, open, readFile, rename, rm } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
@@ -11,15 +12,18 @@ function validate(operation, args) {
   if (!args || typeof args !== 'object' || Array.isArray(args) || (typeof args.threadId !== 'string' || !uuid.test(args.threadId))) {
     throw new DispatchError('INVALID_ARGUMENT', 'threadId must be a UUID copied from the target desktop thread.');
   }
-  if (!['status', 'dispatch', 'followup', 'stop'].includes(operation)) throw new DispatchError('INVALID_ARGUMENT', 'Unknown operation.');
+  if (!['status', 'dispatch', 'followup', 'stop', 'permissions'].includes(operation)) throw new DispatchError('INVALID_ARGUMENT', 'Unknown operation.');
   if (args.turnId !== undefined && (typeof args.turnId !== 'string' || !args.turnId.length || args.turnId.length > 128)) {
     throw new DispatchError('INVALID_ARGUMENT', 'turnId must be a nonempty string of at most 128 characters.');
   }
+  requestedMode(args);
+  if (operation === 'permissions' && requestedMode(args) === 'inherit') throw new DispatchError('INVALID_ARGUMENT', 'Select an explicit permissionMode for this idle thread.');
+  if (['followup', 'stop'].includes(operation) && (args.permissionMode !== undefined || args.sandbox !== undefined)) throw new DispatchError('INVALID_ARGUMENT', 'Change permissions only while the thread is idle.');
   if (operation === 'status') return;
   if (typeof args.requestId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(args.requestId)) {
     throw new DispatchError('INVALID_ARGUMENT', 'Provide a unique requestId of 8-128 letters, digits, underscores or hyphens. Reuse it for retries.');
   }
-  if (operation !== 'stop' && (typeof args.prompt !== 'string' || !args.prompt.trim() || Buffer.byteLength(args.prompt) > 65536)) {
+  if (!['stop', 'permissions'].includes(operation) && (typeof args.prompt !== 'string' || !args.prompt.trim() || Buffer.byteLength(args.prompt) > 65536)) {
     throw new DispatchError('INVALID_ARGUMENT', 'prompt must contain 1-65536 UTF-8 bytes.');
   }
   if (['stop', 'followup'].includes(operation) && !args.turnId) throw new DispatchError('INVALID_ARGUMENT', 'turnId is required to target an active turn.');
@@ -75,28 +79,61 @@ export function createDispatcher({ socketPath, stateDirectory = join(homedir(), 
     let desktop;
     try {
       if (operation !== 'status') {
-        claim = await journal.claim(args.requestId, hash(JSON.stringify([operation, args.threadId, args.turnId ?? null, args.prompt ?? null])));
+        const values = [operation, args.threadId, args.turnId ?? null, args.prompt ?? null];
+        if (args.permissionMode !== undefined && args.permissionMode !== 'inherit') values.push(args.permissionMode);
+        claim = await journal.claim(args.requestId, hash(JSON.stringify(values)));
         if (claim.result) return claim.result;
         if (active.has(args.threadId)) throw new DispatchError('BUSY', 'Another plugin command is being submitted to this thread.');
         active.add(args.threadId);
         locked = true;
       }
       desktop = desktopFactory({ socketPath, timeoutMs, signal: abort });
-      const snapshot = await desktop.connect(args.threadId);
+      let snapshot = await desktop.connect(args.threadId);
       const current = summarize(snapshot);
       if (operation === 'status') return summarize(snapshot, args.turnId);
       if (abort?.aborted) throw new DispatchError('ABORTED', 'The caller cancelled before submission.');
-      if (operation === 'dispatch') {
+      if (['dispatch', 'permissions'].includes(operation)) {
         if (current.runtimeStatus !== 'idle' || current.status === 'inProgress' || current.pendingRequests !== 0) {
           throw new DispatchError('THREAD_NOT_IDLE', 'The thread is busy, awaiting input, or its state is unknown. Check status first.');
         }
       } else if (current.status !== 'inProgress' || current.turnId !== args.turnId) {
         throw new DispatchError('TURN_CHANGED', 'The requested turn is no longer active. Nothing was sent.');
       }
+      let permissions;
+      const mode = requestedMode(args);
+      if (['dispatch', 'permissions'].includes(operation)) {
+        if (mode !== 'inherit' && nextPermissions(snapshot.state).mode !== mode) {
+          // Settings are idempotent; a dispatch retry may verify them again, but never replays a submitted turn.
+          if (operation === 'permissions') submitted = true;
+          try {
+            const response = await desktop.request('thread-follower-update-thread-settings', {
+              conversationId: args.threadId, threadSettings: permissionSettings(mode),
+            }, { mutation: true });
+            if (response.result?.applied !== true) throw new Error('Settings not acknowledged');
+          } catch {
+            throw new DispatchError('PERMISSION_UPDATE_UNCONFIRMED', 'The permission change was not confirmed. No task was sent; inspect status before retrying.');
+          }
+          desktop.close();
+          desktop = desktopFactory({ socketPath, timeoutMs, signal: abort });
+          snapshot = await desktop.connect(args.threadId);
+          const refreshed = summarize(snapshot);
+          if (refreshed.runtimeStatus !== 'idle' || refreshed.status === 'inProgress' || refreshed.pendingRequests !== 0) {
+            throw new DispatchError('THREAD_NOT_IDLE', 'The thread became busy during permission verification. No task was sent.');
+          }
+        }
+        permissions = assertPermissions(snapshot.state, mode);
+        if (operation === 'permissions') {
+          const receipt = { accepted: true, completed: true, operation, requestId: args.requestId, threadId: args.threadId,
+            permissions, threadUrl: `codex://threads/${args.threadId}` };
+          await journal.finish(claim, receipt);
+          return receipt;
+        }
+      }
+      if (abort?.aborted) throw new DispatchError('ABORTED', 'The caller cancelled before submission.');
       const text = [{ type: 'text', text: args.prompt, text_elements: [] }];
       const method = operation === 'dispatch' ? 'thread-follower-start-turn' : operation === 'followup' ? 'thread-follower-steer-turn' : 'thread-follower-interrupt-turn';
       const params = operation === 'dispatch'
-        ? { conversationId: args.threadId, turnStart: { request: { threadId: args.threadId, input: text }, context: { inheritThreadSettings: true } } }
+        ? { conversationId: args.threadId, turnStart: { request: { threadId: args.threadId, input: text, ...permissionSettings(mode) }, context: { inheritThreadSettings: true } } }
         : operation === 'followup' ? { conversationId: args.threadId, input: text, restoreMessage: { text: args.prompt, context: {} } }
           : { conversationId: args.threadId, mode: 'user-stop', expectedTurnId: args.turnId };
       // No retries after this boundary: even a lost response can mean accepted work.
@@ -112,7 +149,7 @@ export function createDispatcher({ socketPath, stateDirectory = join(homedir(), 
       const turnId = operation === 'dispatch' ? result?.turn?.id : args.turnId;
       if (typeof turnId !== 'string' || !turnId) throw new DispatchError('OUTCOME_UNKNOWN', 'Desktop replied without a turn ID. Inspect the thread before retrying.');
       const receipt = { accepted: true, completed: false, operation, requestId: args.requestId,
-        threadId: args.threadId, turnId, threadUrl: `codex://threads/${args.threadId}` };
+        threadId: args.threadId, turnId, ...(permissions ? { permissions } : {}), threadUrl: `codex://threads/${args.threadId}` };
       await journal.finish(claim, receipt);
       return receipt;
     } catch (error) {
