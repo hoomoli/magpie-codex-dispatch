@@ -97,7 +97,7 @@ export function createDispatcher({ socketPath, stateDirectory = join(homedir(), 
       const method = operation === 'dispatch' ? 'thread-follower-start-turn' : operation === 'followup' ? 'thread-follower-steer-turn' : 'thread-follower-interrupt-turn';
       const params = operation === 'dispatch'
         ? { conversationId: args.threadId, turnStart: { request: { threadId: args.threadId, input: text }, context: { inheritThreadSettings: true } } }
-        : operation === 'followup' ? { conversationId: args.threadId, input: text }
+        : operation === 'followup' ? { conversationId: args.threadId, input: text, restoreMessage: { text: args.prompt, context: {} } }
           : { conversationId: args.threadId, mode: 'user-stop', expectedTurnId: args.turnId };
       // No retries after this boundary: even a lost response can mean accepted work.
       submitted = true;

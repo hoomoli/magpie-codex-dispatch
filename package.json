@@ -1,20 +1,39 @@
 {
   "name": "magpie-codex-dispatch",
-  "version": "0.1.0",
-  "description": "Dispatch tasks to the running Codex desktop app through Magpie. 通过 Magpie 向正在运行的 Codex 桌面应用派发任务。",
+  "version": "0.2.0",
+  "description": "Create and dispatch Codex desktop tasks through Magpie, with project selection and safe session handoff. 通过 Magpie 在 Codex 桌面新建和派发任务，支持项目选择与安全会话交接。",
   "type": "module",
   "main": "src/index.js",
   "exports": "./src/index.js",
-  "files": ["src", "README.md", "README.zh-CN.md", "LICENSE"],
+  "files": [
+    "src",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE",
+    "docs"
+  ],
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/index.js && node --check src/desktop.js && node --check src/dispatch.js",
+    "check": "node scripts/check.mjs",
     "probe": "node scripts/probe.mjs"
   },
-  "engines": {"node": ">=22"},
-  "os": ["darwin"],
+  "engines": {
+    "node": ">=22"
+  },
+  "os": [
+    "darwin"
+  ],
   "license": "MIT",
   "author": "hoomoli <hoomoli@outlook.com>",
-  "repository": {"type": "git", "url": "git+https://github.com/hoomoli/magpie-codex-dispatch.git"},
-  "keywords": ["magpie", "codex", "mcp", "desktop", "claude"]
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hoomoli/magpie-codex-dispatch.git"
+  },
+  "keywords": [
+    "magpie",
+    "codex",
+    "mcp",
+    "desktop",
+    "claude"
+  ]
 }

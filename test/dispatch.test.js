@@ -119,6 +119,7 @@ test('followup steers and stop sends the expected turn guard', async t => {
   await f.run('stop', { ...command, requestId: 'request-0002', turnId });
   const [steer, stop] = mutations(f.calls);
   assert.equal(steer.method, 'thread-follower-steer-turn'); assert.equal(steer.version, 1);
+  assert.deepEqual(steer.params.restoreMessage, { text: command.prompt, context: {} });
   assert.equal(stop.version, 4); assert.equal(stop.params.expectedTurnId, turnId);
 });
 
@@ -168,11 +169,13 @@ test('unknown history is not success and assistant output is bounded', () => {
   assert.equal(result.output.length, 16000); assert.equal(result.outputTruncated, true);
 });
 
-test('plugin exposes four serializable Magpie tool definitions and validates input', async () => {
+test('plugin exposes serializable tool definitions and validates mutation input', async () => {
   const { tool } = await plugin();
-  assert.equal(Object.keys(tool).length, 4);
+  assert.equal(Object.keys(tool).length, 10);
   for (const definition of Object.values(tool)) {
     assert.equal(JSON.parse(JSON.stringify(definition.args)).type, 'object');
-    await assert.rejects(definition.execute({ threadId: 'invalid' }), /INVALID_ARGUMENT/);
+  }
+  for (const name of ['codex_dispatch', 'codex_followup', 'codex_stop', 'codex_create_task', 'codex_handoff']) {
+    await assert.rejects(tool[name].execute({ threadId: 'invalid' }), /INVALID_ARGUMENT/);
   }
 });

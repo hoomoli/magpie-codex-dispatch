@@ -1,127 +1,130 @@
 # magpie-codex-dispatch
 
-[English](README.md)
+[English](README.md) · [控制权规范](docs/ownership.md) · [验收记录](docs/verification.md)
 
-**中文：** 通过本地 IPC 向正在运行的 Codex 桌面应用派发任务，并在原生会话中实时显示执行过程的 Magpie 插件。
+**中文：** 通过 Magpie 新建指定项目的 Codex 会话、安全交接空闲会话，并在 Codex 桌面应用原生对话中实时执行任务。
 
-**English:** A Magpie plugin that dispatches tasks to the running Codex desktop app via local IPC, with execution visible in the native conversation.
+**English:** A Magpie plugin for creating project-specific Codex conversations, handing off idle Companion sessions, and dispatching tasks with live execution in the native Codex desktop app.
 
 ```text
-Claude 或其他 MCP 客户端
-  → Magpie 已有的 MCP 网关与插件宿主
-    → 正在运行的 Codex 桌面应用本地 IPC
-      → 已有的原生会话
+Claude / 其他 MCP 客户端
+  → 已有 Magpie MCP 网关和插件宿主
+    → 创建空会话 → 临时创建进程退出 → 打开原生会话
+    → 桌面 IPC：派发 / 补充指令 / 停止 / 查询
 ```
 
-插件运行在 Magpie 插件宿主中，不启动额外的 Codex app-server，不需要单独看板、模型 API Key，也无需修改 Claude 的模型路由。Codex 桌面应用负责执行、权限、审批及实时展示，调用方通过短请求查询状态。
+执行、权限、审批和实时显示都由 Codex 桌面负责。Claude 的模型供应商不必改为 Magpie 路由；接入这里的 MCP 工具即可。不增加单独看板或常驻 Codex 执行服务。创建会话、读取项目目录时会短暂启动桌面附带的公开 app-server，随后退出；该临时客户端不能执行任务轮次。已有原生会话直接通过正在运行的桌面派发。
 
-## 当前支持范围
+## 安装并接入 Claude
 
-这是实验性的 **macOS 首版**。目标会话必须已在本机 Codex 桌面应用中打开。**尚不支持从外部自动新建桌面会话**：请先在应用中创建或打开目标会话，再使用其 UUID，例如 `codex://threads/<uuid>` 链接中的 ID。
-
-本插件依赖**桌面应用内部 IPC**，不是公开的 [Codex App Server API](https://learn.chatgpt.com/docs/app-server)，应用升级后可能需要适配。当前核实范围：
-
-| 组件 | 版本及验证 |
-| --- | --- |
-| ChatGPT/Codex Desktop | macOS 26.1027.61615；真实会话归属发现与状态读取 |
-| Magpie | 0.1.2785；隔离插件宿主成功加载四个工具，并读取真实桌面状态 |
-| Magpie Bun | 1.4.4 |
-| Node | 26.3.0；模拟 IPC 与失败路径自动测试 |
-
-插件写操作已通过模拟桌面测试。此前独立探测脚本验证过派发、下一轮追加和中断，但**不能将其视为本插件的端到端验收**。本版本尚未完成“Claude → 正式安装的 Magpie MCP → 原生桌面任务执行及界面展示”的完整验收。不宣称支持 Windows 或 Linux 桌面。
-
-## 安装与接入
-
-在已安装并运行 Magpie 的环境中执行：
+需要 macOS、正在运行的 Codex 桌面，以及支持社区插件工具的 Magpie：
 
 ```sh
 magpie plugin add github:hoomoli/magpie-codex-dispatch
+magpie library mcp agents magpie-codex-dispatch claude
 ```
 
-也可以安装本地仓库：
+本地开发安装：
 
 ```sh
 git clone https://github.com/hoomoli/magpie-codex-dispatch.git
 magpie plugin add ./magpie-codex-dispatch
+magpie library mcp agents magpie-codex-dispatch claude
 ```
 
-在 Magpie 中启用本插件以及内置的 **Plugin tools**。从插件的 Installed 行复制 MCP 地址。所有插件的公共入口为 `/mcp/magpie/tools`；Magpie 也提供单插件入口与 Library 条目。请使用自己实例显示的实际地址和端口。
+Magpie 会把此插件的 HTTP MCP 配置写入 Claude。新开 Claude 会话加载工具。Library 接入与手动配置 MCP 二选一，避免重复工具；地址、端口及认证以本机 Magpie 的 Installed/Library 页面为准。无需改变 Claude 模型配置。
 
-将复制的地址赋给 `MAGPIE_TOOLS_URL` 后，Claude Code 可以直接添加：
+可以对 Claude 说：
 
-```sh
-claude mcp add --transport http --scope user magpie-codex "$MAGPIE_TOOLS_URL"
-```
+> 使用 Magpie Codex 工具，在 `my-project` 项目中新建任务。先查询项目；对待完成的派发保持相同 requestId 和参数重试。接受后使用返回的 threadId 和 turnId 查询完成情况。任务内容：……
 
-或者在 Magpie Library 中将本插件的 MCP 条目启用给 Claude。两种方式选一种，避免工具重复。**无需先把 Claude 的模型请求改走 Magpie。** 远程 Magpie 网关可能要求自己的鉴权；这与 Codex 的登录无关。
+如果是旧 openai-codex / Companion 会话，先停止通过旧集成向该会话提交，再检查所有权并交接，等到 `desktop_owned` 后使用本插件继续交互。
 
-## 四个工具
+## 工具
 
-公共 MCP 入口会给工具名增加插件前缀，单插件入口使用下列名字。请以实际 `tools/list` 返回为准。
+插件专属 MCP 直接暴露下列名称；组合入口通常添加 `magpie-codex-dispatch_` 前缀，以 `tools/list` 为准。
 
-| 工具 | 参数 | 行为 |
+| 工具 | 主要参数 | 作用 |
 | --- | --- | --- |
-| `codex_status` | `threadId`，可选 `turnId` | 读取最新快照、执行状态和最多 16,000 字符的助手输出 |
-| `codex_dispatch` | `threadId`、`prompt`、`requestId` | 在空闲的已有会话中开始下一轮，返回接收结果与 `turnId` |
-| `codex_followup` | `threadId`、`turnId`、`prompt`、`requestId` | 向执行中的轮次追加指令；已结束时使用 dispatch |
-| `codex_stop` | `threadId`、`turnId`、`requestId` | 请求中断指定的执行中轮次 |
+| `codex_projects` | 无 | 列出真实项目 ID、名称和目录 |
+| `codex_create_task` | `requestId`、`prompt`、项目或目录选择 | 新建、接管、派发，可返回等待状态 |
+| `codex_ownership` | `threadId` | 检查桌面或外部写入方，不释放锁 |
+| `codex_handoff` | `threadId`、`requestId`，可选 `sourceEndpoint` | 释放一个空闲 Companion 会话并等桌面接管 |
+| `codex_recover_creation` | `requestId`、`threadId` | 校验唯一来源标记、项目和目录，恢复待确认创建；不派发 |
+| `codex_operation_status` | `requestId` | 只读持久化进度，不推进流程 |
+| `codex_status` | `threadId`，可选 `turnId` | 获取实时状态及最多 16,000 字符的助手输出 |
+| `codex_dispatch` | `threadId`、`prompt`、`requestId` | 在空闲原生会话开始下一轮 |
+| `codex_followup` | 再加 `turnId` | 向进行中的轮次补充指令 |
+| `codex_stop` | `threadId`、`turnId`、`requestId` | 请求中断指定的进行中轮次 |
 
-调用示例，需替换占位会话 ID：
+### 新建指定项目的会话
 
 ```json
 {
-  "threadId": "00000000-0000-4000-8000-000000000001",
   "requestId": "example-task-0001",
-  "prompt": "Reply with exactly OK. Do not use tools or modify files."
+  "projectName": "my-project",
+  "title": "Example task",
+  "sandbox": "read-only",
+  "prompt": "Reply exactly OK. Do not use tools or modify files."
 }
 ```
 
-1. 先查询状态，确认目标会话正确、已打开且空闲。
-2. 用新的 `requestId` 派发任务，保存返回的 `turnId`。
-3. 带上会话和轮次 ID 查询状态，建议间隔 2–5 秒。`accepted: true` 只代表接收，不代表执行完成。
-4. 分别处理 `completed`、`interrupted`、`failed`、`inProgress` 和 `unknown`。历史未加载或已移出缓存时保持未知；审批和等待用户输入仍在桌面应用内处理。
+使用 `codex_projects` 返回的唯一 `projectName` 或真实 `projectId`。桌面界面的项目 ID 可能与后端不同，不能混用。项目只有一个根目录时自动选取；多个根目录必须提供位于其范围内的 `cwd`。只提供明确的绝对 `cwd`，则创建不归属项目的会话；不会默认塞进当前项目。目录会解析真实路径再检查归属。这里创建的是**会话，不是新项目**。
 
-`codex_followup` 会先检查活动轮次，但内部 steer 接口没有原子的目标轮次保护。如果桌面用户同时切换了执行轮次，仍可能发生竞争，使用时应避免其他调用方同时替换当前轮次。`codex_stop` 则发送协议支持的 `expectedTurnId` 保护参数。两者都应再查状态确认结果。
+`title` 最多 160 字符，不填则用 `Magpie task`，确保空会话写入名称。`sandbox` 默认 `workspace-write`，也可选 `read-only`；审批策略为 `on-request`。创建结果和桌面目录经过核实后才派发，后续轮次继承会话设置。
 
-## 超时与重复请求
+### 等待、重试和完成
 
-- 每步 IPC 超时为 8 秒，正常文件系统条件下，整个调用控制在 Magpie 的 55 秒工具预算内。取消工具调用会关闭 IPC，**不会自动停止已经接收的任务**。
-- 写操作发送后不自动重试。超时、断线或不明确的响应会返回 `OUTCOME_UNKNOWN`；请先查看桌面或查询状态。
-- 重试时使用**相同 requestId 和相同参数**。已确认的请求返回保存的回执；正在处理或结果未知的请求不再次发送，插件重启后也一样。相同 ID 配不同参数会报错。
-- 发送前检查失败且成功清理回执后，可以重用该 ID。一个插件实例同时只向同一会话提交一个命令，但不能阻止其他客户端或桌面用户并发操作。
-- 本地回执只存操作 ID、SHA-256 参数指纹和接收元数据，不保存任务文本、会话输出、凭证或模型配置。回执不会自动过期，删除它们会失去对应请求的重复保护。
-- 每次状态查询都读取新快照后断开；插件不重建长期增量流，实时展示由桌面应用自身负责。
+1. 每个逻辑操作固定一个请求 ID，8–128 位字母、数字、下划线或连字符。
+2. 新建或交接返回等待阶段时，隔约 2–5 秒重复**相同工具、参数和请求 ID**。源端卸载实测可能需要约一分钟。
+3. `phase: accepted` 后保存 `threadId` 和 `turnId`，使用两者查询 `codex_status`。已接受不等于已完成。
+4. 分别处理进行中、完成、失败、中断、未知历史和待审批。审批在原生桌面处理。
+5. 提交后丢回执会保留 `OUTCOME_UNKNOWN` / `dispatch_unknown`，不自动重发；先检查状态，不能换 ID 盲目再发一次。
 
-## 配置与访问范围
+状态文件保存哈希、ID、项目/目录和阶段，不保存提示词或对话输出。插件重启后，相同已接受请求仍返回原回执。创建请求丢回执时，会通过唯一来源标记进行有界的元数据查找；最多列出 1,000 条、读取 30 条缺失标记的候选记录。
 
-可选环境变量应配置给 **Magpie 插件宿主**，仅配置给 Claude 进程不会生效：
+**上游限制：** 刚创建的空会话可能不出现在列表，甚至尚未持久化。无法核实时保持 `creation_unknown`，不重复创建。若已掌握原会话 ID，可调用 `codex_recover_creation`；只有来源标记、项目和目录都匹配才绑定，然后重新调用原创建请求。如果原会话无法读取，恢复也会拒绝，不能把缺失当作失败后自动重建。
+
+流程靠重试调用推进，没有后台重试守护进程。`codex_operation_status` 是历史进度，不能代替实时所有权或执行状态。请保留回执文件，删除会失去防重放保护。插件可回收自己已退出进程的操作锁；不完整的记录会要求检查。绝不修改 Codex 写锁文件。
+
+## 控制权边界
+
+- 一个会话只有一个写入方。正常 Claude ↔ Codex 对话走桌面跟随接口，不需要每轮互相释放写锁。
+- 旧会话交接支持当前用户的本地 Codex Companion broker。插件核实写入进程的父 broker、socket 和握手，检查目标空闲后只取消订阅该会话。运行中或未知写入方不会被强抢。
+- 源端确认释放还不够，必须等待实际卸载，再取得原生所有者快照。不会删除 Codex 锁、杀共享 broker、关闭无关会话或自动中断运行中的任务。
+- Claude 负责在交接前停止源端继续提交。上游没有“仅空闲时释放”的原子参数，违反协作约定仍可能发生竞争。插件不提供任意桌面到 CLI 的反向写入方迁移；双向交互都使用桌面原生所有者。
+- 通过 `codex://threads/<id>` 打开会话，可能切换到前台；不使用辅助功能自动化。桌面若保留旧占用画面，可释放后切换会话再打开，或点“重试”。
+- 补充指令发送前检查轮次，但私有 steer 协议没有原子轮次保护，应避免与界面切换轮次并发。停止接口有 `expectedTurnId` 保护，仍需查询最终状态。
+- 调用方取消等待不会自动中断已接受任务。每次工具调用有 45 秒期限，通信及临时进程清理均有超时边界。
+
+完整规范见 [ownership.md](docs/ownership.md)。
+
+## 兼容性与配置
+
+这是 **macOS 实验性集成**，同时使用公开 [Codex App Server API](https://learn.chatgpt.com/docs/app-server) 和**私有桌面 IPC**。桌面升级可能导致不兼容；不支持的流协议版本在派发前拒绝。不宣称 Windows/Linux 桌面支持。
+
+以下环境变量设置在 **Magpie 插件宿主**，仅在 Claude 中设置无效：
 
 | 变量 | 默认值 |
 | --- | --- |
 | `MAGPIE_CODEX_SOCKET` | `~/.codex/ipc/ipc.sock` |
 | `MAGPIE_CODEX_STATE_DIR` | `~/.local/state/magpie-codex-dispatch` |
+| `MAGPIE_CODEX_BINARY` | 桌面自带 Codex CLI；覆盖值必须是绝对可执行路径 |
+| `CODEX_HOME` | 公开客户端和写入方检查默认用 `~/.codex`；非标准桌面目录还需设置 socket |
 
-Socket 必须属于当前用户。回执目录必须属于当前用户且权限为 `0700`，文件权限为 `0600`。插件不读取 Codex 凭证、不修改会话文件，继承目标会话的执行设置，不自动代答审批。
+socket 必须属于当前用户。状态目录权限为 `0700`、文件为 `0600`。插件不直接读取凭证、不改写 Codex 会话存储；桌面自带 app-server 使用现有登录配置。获得 MCP 权限即可派发本地任务和读取助手输出，应通过 Magpie 限定可信客户端。提示词上限 64 KiB，协议帧上限 32 MiB，错误信息不输出内部原始载荷。
 
-获得这些工具权限的调用方可以向本地桌面会话派发任务，并读取助手输出。请通过 Magpie 的 MCP/Library 设置限定调用方，不向不可信客户端开放。任务文本最多 64 KiB，IPC 帧最多 32 MiB；不支持的状态协议版本会在派发前报错。
+## 开发与验证
 
-## 开发和验证
-
-没有运行时依赖，无需构建。开发使用 Node 22+，运行时由 Magpie 提供 Bun。
+无运行时依赖、无需构建。开发使用 Node 22+；Magpie 自带 Bun。
 
 ```sh
 npm run check
 npm test
 npm pack --dry-run
-npm run probe -- <existing-thread-uuid>
+npm run probe -- <thread-uuid>
 ```
 
-只读探测脚本只输出元数据，不打印助手内容。自动测试使用临时 socket 和回执目录，不接触真实会话；覆盖分片帧、归属路由、重启后重复请求保护、忙碌或变化的轮次、不安全路径、超时、断线、取消和协议版本不匹配。
+只读 probe 不打印对话正文。自动测试使用临时 socket 和状态目录，覆盖路由、忙碌状态、取消、协议异常、丢回执、项目检查及防重复。真实链路及兼容性边界见 [验收记录](docs/verification.md)。
 
-安装验收应使用专门的测试会话，通过 Claude 实际连接的 Magpie MCP 发送上述无副作用示例，核对原生界面和查询结果，再在该测试会话中验证追加及中断，不使用正在工作的会话。
-
-接口依据：[Magpie 插件工具说明 v0.1.2785](https://github.com/yetone/magpie/blob/v0.1.2785/docs/subsystems/plugin-tools.md)。调研参考项目：[magpie-codex-bridge](https://github.com/lesnolie/magpie-codex-bridge)、[codex-web](https://github.com/i-am-BT/codex-web)。本仓库为独立实现，没有包含这些项目或桌面应用的代码副本。
-
-## 许可证
-
-[MIT](LICENSE)。
+接口参考：[Magpie plugin tools v0.1.2785](https://github.com/yetone/magpie/blob/v0.1.2785/docs/subsystems/plugin-tools.md)。独立实现，不包含桌面应用私有源码。[MIT 许可](LICENSE)。

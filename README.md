@@ -1,127 +1,128 @@
 # magpie-codex-dispatch
 
-[中文说明](README.zh-CN.md)
+[中文说明](README.zh-CN.md) · [Ownership contract / 控制权规范](docs/ownership.md)
 
-**English:** A Magpie plugin that dispatches tasks to the running Codex desktop app via local IPC, with execution visible in the native conversation.
+**English:** A Magpie plugin for creating project-specific Codex conversations, handing off idle Companion sessions, and dispatching tasks with live execution in the native Codex desktop app.
 
-**中文：** 通过本地 IPC 向正在运行的 Codex 桌面应用派发任务，并在原生会话中实时显示执行过程的 Magpie 插件。
+**中文：** 通过 Magpie 新建指定项目的 Codex 会话、安全交接空闲会话，并在 Codex 桌面应用原生对话中实时执行任务。
 
 ```text
-Claude (or another MCP client)
-  -> Magpie's existing MCP gateway and plugin host
-    -> the running Codex desktop app's local IPC
-      -> an existing native conversation
+Claude / other MCP client
+  -> existing Magpie MCP gateway and plugin host
+    -> create empty thread -> temporary creator exits -> open native thread
+    -> native desktop IPC: dispatch / follow-up / stop / status
 ```
 
-No extra Codex app-server, separate dashboard, model API key, or model-routing change is required. The plugin runs inside Magpie's plugin host. Codex Desktop remains responsible for execution, permissions, approvals and live rendering. The caller obtains status through short polling calls.
+Codex Desktop owns execution, permissions, approvals and live rendering. Claude's model does not need to route through Magpie. There is no separate dashboard or persistent Codex execution server added by this plugin. Creating a thread or reading the project catalog briefly starts the app's bundled public app-server, then closes it. That temporary client cannot execute turns. Existing native-thread dispatch uses the running desktop directly.
 
-## Status and requirements
+## Install and connect Claude
 
-Experimental **macOS-only** release. Requires an open local Codex desktop conversation and a Magpie version supporting community plugin tools. Creating a new desktop conversation from an external client is **not implemented**. Create/open the destination in the app first and use its thread UUID (for example, from a `codex://threads/<uuid>` link).
-
-This uses **private desktop IPC**, not the public [Codex App Server API](https://learn.chatgpt.com/docs/app-server). Protocol changes can break compatibility. Verified against these local versions:
-
-| Component | Version / evidence |
-| --- | --- |
-| ChatGPT/Codex Desktop | macOS 26.1027.61615; live owner discovery and status snapshot |
-| Magpie | 0.1.2785; isolated plugin host loaded all four tools and read live desktop status |
-| Magpie Bun | 1.4.4 |
-| Node | 26.3.0; automated transport and failure-path tests |
-
-The plugin's write operations have automated tests against a simulated desktop. A prior standalone probe established start/next-turn/interrupt viability, but that does **not** constitute an end-to-end test of this plugin. Claude -> installed Magpie MCP -> native desktop task execution and UI acceptance remain unverified for this release. No claim of Windows or Linux desktop support is made.
-
-## Install
-
-With Magpie installed and running:
+Requires macOS, a running Codex desktop app, and Magpie with community plugin tools enabled:
 
 ```sh
 magpie plugin add github:hoomoli/magpie-codex-dispatch
+magpie library mcp agents magpie-codex-dispatch claude
 ```
 
-Or install a local checkout:
+Local development:
 
 ```sh
 git clone https://github.com/hoomoli/magpie-codex-dispatch.git
 magpie plugin add ./magpie-codex-dispatch
+magpie library mcp agents magpie-codex-dispatch claude
 ```
 
-In Magpie, enable the community plugin and the built-in **Plugin tools** capability. Copy the MCP address from its Installed row. The combined endpoint is `/mcp/magpie/tools`; Magpie also offers a plugin-specific endpoint and a Library entry. Use the address shown by your instance, including its actual port.
+Magpie writes its plugin-specific HTTP MCP entry into Claude's configuration. Start a new Claude session to pick it up. Use the Library connection **or** a manually configured MCP entry, not both. The address and authentication depend on your Magpie instance; copy its Installed/Library address instead of assuming a port. No model-provider change is necessary.
 
-To connect Claude Code directly, set `MAGPIE_TOOLS_URL` to the copied address, then run:
+Ask Claude, for example:
 
-```sh
-claude mcp add --transport http --scope user magpie-codex "$MAGPIE_TOOLS_URL"
-```
+> Use the Magpie Codex tools to create a new task in project `my-project`. First list projects. Use one stable requestId and identical arguments for pending retries. After acceptance, poll status for the returned threadId and turnId. Task: …
 
-Alternatively, enable this plugin's Library MCP entry for Claude through Magpie. Choose one connection method to avoid duplicate tools. Claude's model provider does not need to route through Magpie. A remote Magpie gateway may require its own authentication; this does not change Codex's authentication.
+For an old Companion session, first stop sending commands to that thread through the old openai-codex integration. Ask Claude to inspect ownership, hand off the idle session, and wait for `desktop_owned`. Subsequent commands use this plugin's follower tools; the desktop remains the writer.
 
 ## Tools
 
-Magpie adds a plugin prefix on the combined endpoint. The plugin-specific endpoint exposes the names below directly; inspect `tools/list` for the actual names.
+Plugin-specific MCP exposes these names. The combined endpoint prefixes them with `magpie-codex-dispatch_`; inspect `tools/list` for the actual names.
 
-| Tool | Arguments | Behavior |
+| Tool | Main arguments | Result |
 | --- | --- | --- |
-| `codex_status` | `threadId`, optional `turnId` | Fresh snapshot, runtime/turn status and up to 16,000 characters of assistant output |
-| `codex_dispatch` | `threadId`, `prompt`, `requestId` | Start the next turn in an idle thread; return acceptance and `turnId` |
-| `codex_followup` | `threadId`, `turnId`, `prompt`, `requestId` | Steer an active turn; use dispatch after it finishes |
-| `codex_stop` | `threadId`, `turnId`, `requestId` | Request interruption of that specific active turn |
+| `codex_projects` | none | Canonical project IDs, names and workspace roots |
+| `codex_create_task` | `requestId`, `prompt`; project selection below | Create, attach and dispatch; can return a resumable pending phase |
+| `codex_ownership` | `threadId` | Desktop ownership or external/unattached writer information |
+| `codex_handoff` | `threadId`, `requestId`, optional `sourceEndpoint` | Release one idle Companion thread, wait for unload and attach desktop |
+| `codex_recover_creation` | `requestId`, `threadId` | Verify source marker/project/cwd and bind an uncertain creation; does not dispatch |
+| `codex_operation_status` | `requestId` | Read saved create/handoff progress without advancing it |
+| `codex_status` | `threadId`, optional `turnId` | Fresh execution snapshot and up to 16,000 characters of assistant output |
+| `codex_dispatch` | `threadId`, `prompt`, `requestId` | Start the next turn in an idle native thread |
+| `codex_followup` | `threadId`, `turnId`, `prompt`, `requestId` | Steer an active turn |
+| `codex_stop` | `threadId`, `turnId`, `requestId` | Request cancellation of the specified active turn |
 
-Example dispatch arguments (replace the placeholder thread ID):
+### Create in a project
 
 ```json
 {
-  "threadId": "00000000-0000-4000-8000-000000000001",
   "requestId": "example-task-0001",
-  "prompt": "Reply with exactly OK. Do not use tools or modify files."
+  "projectName": "my-project",
+  "title": "Example task",
+  "sandbox": "read-only",
+  "prompt": "Reply exactly OK. Do not use tools or modify files."
 }
 ```
 
-1. Read `codex_status` to confirm the intended thread is open and idle.
-2. Dispatch using a new request ID. Save the returned `turnId`.
-3. Poll status with both `threadId` and `turnId`, typically every 2-5 seconds. `accepted: true` is not completion.
-4. Handle `completed`, `interrupted`, `failed`, `inProgress` and `unknown` distinctly. Missing/evicted history stays unknown. Requests awaiting user input or approvals must be handled in the desktop app.
+Select an exact unique `projectName` or canonical `projectId` from `codex_projects`. Desktop UI project IDs can differ from backend IDs. One project root supplies the working directory; multiple roots require an explicit `cwd` inside a root. An explicit absolute `cwd` without a project creates a projectless thread. No implicit current-project default is used. Paths are resolved through filesystem aliases and checked before creation. This creates a **conversation**, not a new project.
 
-`codex_followup` checks the active turn before submitting, but the private steer protocol does not carry an atomic expected-turn guard. A concurrent UI turn change can race this check; avoid steering while another actor replaces the active turn. `codex_stop` sends the protocol's expected-turn guard. Always read status to confirm the resulting state.
+Optional `title` is limited to 160 characters; its default is `Magpie task`, so empty threads are named before the creator exits. `sandbox` is `workspace-write` by default or `read-only`; approval policy is `on-request`. The creation response and native workspace are checked before dispatch. Follow-up turns inherit thread settings.
 
-## Failure and retry behavior
+### Retry and completion
 
-- Each IPC step times out after 8 seconds; a call fits within Magpie's 55-second tool budget under normal filesystem conditions. Caller cancellation closes IPC but does **not** automatically stop an accepted task.
-- A mutation is never automatically retried. After submission, timeout, disconnect or an ambiguous response produces `OUTCOME_UNKNOWN`. Inspect the desktop/status before deciding what to do.
-- Reuse the **same request ID and arguments** to retrieve an acknowledged receipt. Reusing an ID with different arguments fails. An in-flight/unknown receipt prevents resubmission, including after plugin restart.
-- Successful preflight failure cleanup allows that ID to be retried because no mutation was sent. Only one command per thread is submitted at a time by one plugin instance; this is not a lock against other clients or the desktop UI.
-- Receipt files retain operation IDs, a SHA-256 command fingerprint and acknowledgement metadata. They contain no prompt, conversation output, credentials or model settings. Receipts have no automatic expiry. Deleting them removes replay protection for those IDs.
-- Status calls use a fresh snapshot and then disconnect. The plugin does not reconstruct a long-running patch stream; the desktop app renders its own live stream.
+1. Save one request ID per logical operation. IDs contain 8–128 letters, digits, underscores or hyphens.
+2. For pending create/handoff phases, wait roughly 2–5 seconds and repeat the **same tool, arguments and requestId**. A tool response can arrive before desktop attachment or source unload finishes. Source unload was observed to take about a minute.
+3. On `phase: accepted`, save `threadId` and `turnId`. Poll `codex_status` with both. Acceptance is not completion.
+4. Handle `inProgress`, `completed`, `failed`, `interrupted`, unknown history and approval requests separately. Handle approvals in the native app.
+5. A lost mutation acknowledgement is `OUTCOME_UNKNOWN` / `dispatch_unknown`. It is never automatically resubmitted. Inspect status; do not invent a new ID to retry uncertain work.
+
+Durable state keeps fingerprints, IDs, project/workspace metadata and progress, not prompts or conversation output. Repeated acknowledged commands return the original receipt, including after restart. Creation lost before saving its thread ID is reconciled using a unique source marker and a bounded metadata scan; if unresolved it stays `creation_unknown` rather than creating a duplicate. The scan examines at most 1,000 list entries and reads at most 30 candidates with omitted markers. Absence is not treated as proof of failure. Empty threads may be omitted from listings or may not yet be persisted upstream. If the original ID is known, `codex_recover_creation` verifies its unique source marker, cwd and project before binding it; then retry the original create arguments. An unreadable thread cannot be recovered or silently recreated.
+
+Progress is advanced by retry calls; there is no background retry worker. `codex_operation_status` is a saved checkpoint, not a live ownership or completion assertion. Do not delete receipt files: doing so removes replay protection. Plugin operation locks can recover a dead process; incomplete lock records are reported for inspection. Codex's writer-lock files are never modified.
+
+## Ownership and limitations
+
+- A thread has one writer. Normal Claude ↔ Codex interaction uses the desktop's follower interface and does **not** transfer the writer back and forth.
+- Handoff supports the local, current-user **Codex Companion broker** protocol. The plugin verifies the writer's parent broker/socket and its handshake, reads the target's idle status, then sends `thread/unsubscribe` for that thread only. Unknown or active writers are refused.
+- Source acknowledgement alone is insufficient: the plugin waits for writer release and a native owner snapshot. It never deletes Codex locks, kills a shared broker, closes unrelated threads or interrupts active work automatically.
+- The source must quiesce submissions before handoff. The source API has no atomic “unsubscribe only if idle” guard; a client that ignores this contract can race the check. Arbitrary desktop-to-CLI writer transfer is not provided. Both callers should keep using the native owner via this plugin.
+- Desktop takeover uses the supported `codex://threads/<id>` deep link and can bring the app/thread to the foreground. It uses no accessibility automation. If the app retains a stale busy screen, switch away and reopen the thread, or use its Retry action after release.
+- Follow-up checks the active turn, but the private steer protocol has no atomic expected-turn guard. Avoid concurrent UI turn replacement. Stop does send `expectedTurnId`; confirm the final state with status.
+- Caller cancellation stops waiting; it does not automatically cancel an already accepted task. Each tool call has a 45-second deadline, with bounded IPC/RPC timeouts and subprocess cleanup.
+
+This is an **experimental macOS integration using private desktop IPC** alongside the public [Codex App Server API](https://learn.chatgpt.com/docs/app-server). Desktop updates can break it. Unsupported stream versions fail before dispatch. Windows/Linux desktop support is not claimed.
 
 ## Configuration and trust
 
-Optional environment variables must be set for the **Magpie plugin host**, not just the calling Claude process:
+Set optional environment variables on the **Magpie plugin host**, not only Claude:
 
 | Variable | Default |
 | --- | --- |
 | `MAGPIE_CODEX_SOCKET` | `~/.codex/ipc/ipc.sock` |
 | `MAGPIE_CODEX_STATE_DIR` | `~/.local/state/magpie-codex-dispatch` |
+| `MAGPIE_CODEX_BINARY` | Installed desktop's bundled Codex CLI; absolute executable path required |
+| `CODEX_HOME` | `~/.codex` for the public client and writer inspection; also set the socket override for a nonstandard desktop home |
 
-The socket must belong to the current user. The receipt directory must be owned by that user and have mode `0700`; receipt files use `0600`. The plugin does not read Codex credentials or rewrite its session files. It inherits the destination thread's settings and never answers approval requests automatically.
+Sockets must belong to the current user. State directory permissions are `0700`, files `0600`. The plugin never reads credentials directly or edits Codex session storage; the bundled app-server uses the user's existing Codex setup. MCP access grants local task execution and assistant-output reads: limit it to trusted clients through Magpie. Prompts are limited to 64 KiB and protocol frames to 32 MiB. Raw internal errors and conversation payloads are not included in error messages.
 
-Anyone granted these tools can send work to local desktop threads and read their assistant output. Limit access through Magpie's MCP/Library configuration; do not expose this capability to untrusted clients. A prompt is limited to 64 KiB and IPC frames to 32 MiB. Unexpected stream versions fail before task submission.
+## Verification and development
 
-## Development and verification
-
-No runtime dependencies or build step are required. Node 22+ is used for development; Magpie supplies Bun at runtime.
+No runtime dependencies or build step. Node 22+ for development; Magpie supplies Bun.
 
 ```sh
 npm run check
 npm test
 npm pack --dry-run
-npm run probe -- <existing-thread-uuid>
+npm run probe -- <thread-uuid>
 ```
 
-The probe is read-only and prints metadata, not assistant output. Tests use temporary sockets and receipt directories, never your actual Codex sessions. They cover fragmented frames, owner routing, duplicates across restart, busy/changed turns, unsafe paths, timeout, disconnect, cancellation and version mismatch.
+The probe reads metadata only. Automated tests use temporary sockets/state and cover routing, busy/changed turns, cancellation, protocol errors, lost replies, creation recovery, project validation and duplicate prevention. See [verification record](docs/verification.md) for actual local acceptance and remaining compatibility limits.
 
-For installation acceptance, use a dedicated desktop conversation, send the harmless example through Claude's actual Magpie MCP connection, verify native UI output and status agree, then test a follow-up and interruption there. Do not use an active work conversation for acceptance testing.
+Interface reference: [Magpie plugin tools, v0.1.2785](https://github.com/yetone/magpie/blob/v0.1.2785/docs/subsystems/plugin-tools.md). This independent implementation does not vendor proprietary desktop code.
 
-Interface reference: [Magpie plugin tools, v0.1.2785](https://github.com/yetone/magpie/blob/v0.1.2785/docs/subsystems/plugin-tools.md). Related projects researched: [magpie-codex-bridge](https://github.com/lesnolie/magpie-codex-bridge) and [codex-web](https://github.com/i-am-BT/codex-web). This repository contains an independent implementation; it does not vendor their code or desktop application code.
-
-## License
-
-[MIT](LICENSE).
+[MIT license](LICENSE).
