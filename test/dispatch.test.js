@@ -1,0 +1,178 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import net from 'node:net';
+import { mkdtemp, rm, writeFile, chmod } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { createDispatcher, Journal } from '../src/dispatch.js';
+import { Desktop, summarize } from '../src/desktop.js';
+import plugin from '../src/index.js';
+
+const threadId = '00000000-0000-4000-8000-000000000001';
+const turnId = 'turn-example';
+const command = { threadId, requestId: 'request-0001', prompt: 'Reply OK; do not use tools.' };
+function state(status = 'completed') {
+  return { id: threadId, requests: [], threadRuntimeStatus: { type: status === 'inProgress' ? 'active' : 'idle' },
+    turnHistory: { history: { entitiesByKey: { tail: { turnId, status, turnStartedAtMs: 100,
+      items: [{ type: 'agentMessage', text: 'OK' }] } } } } };
+}
+function frame(value) {
+  const data = Buffer.from(JSON.stringify(value));
+  const prefix = Buffer.alloc(4); prefix.writeUInt32LE(data.length);
+  return Buffer.concat([prefix, data]);
+}
+async function fixture(t, options = {}) {
+  // Keep Unix socket paths short on macOS.
+  const directory = await mkdtemp(join('/tmp', 'mcd-'));
+  const socketPath = join(directory, 'ipc.sock');
+  const calls = [];
+  const sockets = new Set();
+  const server = net.createServer(socket => {
+    sockets.add(socket); socket.on('close', () => sockets.delete(socket)); socket.on('error', () => {});
+    let buffer = Buffer.alloc(0);
+    const send = value => {
+      const data = frame(value);
+      // Split the length prefix and coalesce body parts to exercise framing.
+      socket.write(data.subarray(0, 2)); socket.write(data.subarray(2));
+    };
+    socket.on('data', chunk => {
+      buffer = Buffer.concat([buffer, chunk]);
+      while (buffer.length >= 4 && buffer.length >= buffer.readUInt32LE(0) + 4) {
+        const length = buffer.readUInt32LE(0);
+        const message = JSON.parse(buffer.subarray(4, length + 4)); buffer = buffer.subarray(length + 4);
+        if (message.type === 'request') {
+          calls.push(message);
+          const reply = result => send({ type: 'response', requestId: message.requestId, resultType: 'success', result, handledByClientId: 'owner' });
+          if (message.method === 'initialize') reply({ clientId: 'plugin' });
+          else if (message.method === 'thread-owner-discovery') reply({});
+          else if (options.dropMutation) socket.destroy();
+          else if (options.silentMutation) { /* Simulate an accepted command with a lost reply. */ }
+          else if (message.method === 'thread-follower-start-turn') reply({ result: { turn: { id: turnId } } });
+          else if (message.method === 'thread-follower-steer-turn') reply({ result: { turnId } });
+          else reply({ ok: !options.rejectStop, interruptedTurnId: turnId });
+        } else if (message.method === 'thread-stream-following-changed' && message.params.following && !options.noSnapshot) {
+          if (options.badFrame) { socket.write(Buffer.from([255, 255, 255, 255])); continue; }
+          send({ type: 'broadcast', method: 'thread-stream-state-changed', version: options.version ?? 11,
+            sourceClientId: 'owner', params: { hostId: 'local', conversationId: threadId,
+              change: { type: 'snapshot', revision: 3, conversationState: state(options.status) } } });
+        }
+      }
+    });
+  });
+  await new Promise(resolve => server.listen(socketPath, resolve));
+  t.after(async () => {
+    for (const socket of sockets) socket.destroy();
+    await new Promise(resolve => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  });
+  const settings = { socketPath, stateDirectory: join(directory, 'receipts'), timeoutMs: 200 };
+  return { calls, settings, directory, run: createDispatcher(settings) };
+}
+const mutations = calls => calls.filter(call => /follower/.test(call.method));
+
+test('fresh status reconstructs modern desktop history without dispatching', async t => {
+  const f = await fixture(t, { status: 'interrupted' });
+  const result = await f.run('status', { threadId });
+  assert.equal(result.status, 'interrupted'); assert.equal(result.output, 'OK');
+  assert.equal(mutations(f.calls).length, 0);
+});
+
+test('dispatch targets owner and inherits settings; retry after restart never resends', async t => {
+  const f = await fixture(t);
+  const result = await f.run('dispatch', command);
+  assert.equal(result.accepted, true); assert.equal(result.completed, false);
+  const call = mutations(f.calls)[0];
+  assert.equal(call.version, 2); assert.equal(call.targetClientId, 'owner');
+  assert.deepEqual(call.params.turnStart.context, { inheritThreadSettings: true });
+  const restarted = createDispatcher(f.settings);
+  assert.equal((await restarted('dispatch', command)).replayed, true);
+  assert.equal(mutations(f.calls).length, 1);
+  await assert.rejects(restarted('dispatch', { ...command, prompt: 'Different task' }), { code: 'REQUEST_ID_CONFLICT' });
+});
+
+test('busy target fails before submission and allows the same ID after preflight failure', async t => {
+  const f = await fixture(t, { status: 'inProgress' });
+  for (let i = 0; i < 2; i++) await assert.rejects(f.run('dispatch', command), { code: 'THREAD_NOT_IDLE' });
+  assert.equal(mutations(f.calls).length, 0);
+});
+
+for (const option of ['dropMutation', 'silentMutation']) {
+  test(`${option}: uncertain results survive restart and cannot be replayed`, async t => {
+    const f = await fixture(t, { [option]: true });
+    await assert.rejects(f.run('dispatch', command), { code: 'OUTCOME_UNKNOWN' });
+    await assert.rejects(createDispatcher(f.settings)('dispatch', command), { code: 'OUTCOME_UNKNOWN' });
+    assert.equal(mutations(f.calls).length, 1);
+  });
+}
+
+test('wrong active turn cannot be steered or interrupted', async t => {
+  const f = await fixture(t, { status: 'inProgress' });
+  for (const operation of ['followup', 'stop']) {
+    await assert.rejects(f.run(operation, { ...command, turnId: 'old-turn' }), { code: 'TURN_CHANGED' });
+  }
+  assert.equal(mutations(f.calls).length, 0);
+});
+
+test('followup steers and stop sends the expected turn guard', async t => {
+  const f = await fixture(t, { status: 'inProgress' });
+  await f.run('followup', { ...command, turnId });
+  await f.run('stop', { ...command, requestId: 'request-0002', turnId });
+  const [steer, stop] = mutations(f.calls);
+  assert.equal(steer.method, 'thread-follower-steer-turn'); assert.equal(steer.version, 1);
+  assert.equal(stop.version, 4); assert.equal(stop.params.expectedTurnId, turnId);
+});
+
+test('a negative interrupt confirmation is never reported as accepted', async t => {
+  const f = await fixture(t, { status: 'inProgress', rejectStop: true });
+  await assert.rejects(f.run('stop', { ...command, turnId }), { code: 'OUTCOME_UNKNOWN' });
+});
+
+for (const [options, code] of [[{ version: 99 }, 'PROTOCOL_MISMATCH'], [{ badFrame: true }, 'INVALID_FRAME'], [{ noSnapshot: true }, 'SNAPSHOT_TIMEOUT']]) {
+  test(`preflight ${code} sends no task`, async t => {
+    const f = await fixture(t, options);
+    await assert.rejects(f.run('dispatch', command), { code });
+    assert.equal(mutations(f.calls).length, 0);
+  });
+}
+
+test('cancellation stops waiting without sending a task', async t => {
+  const f = await fixture(t, { noSnapshot: true });
+  const controller = new AbortController();
+  const pending = f.run('dispatch', command, { abort: controller.signal });
+  setTimeout(() => controller.abort(), 30);
+  await assert.rejects(pending, { code: 'ABORTED' });
+  assert.equal(mutations(f.calls).length, 0);
+});
+
+test('ordinary files are rejected as sockets', async t => {
+  const f = await fixture(t);
+  const path = join(f.directory, 'not-socket'); await writeFile(path, '');
+  await assert.rejects(new Desktop({ socketPath: path }).connect(threadId), { code: 'UNSAFE_SOCKET' });
+});
+
+test('receipt claim is atomic, detects unsafe permissions and does not replay incomplete writes', async t => {
+  const f = await fixture(t);
+  const journal = new Journal(f.settings.stateDirectory);
+  const claimed = await journal.claim('unique-id', 'fingerprint');
+  await assert.rejects(journal.claim('unique-id', 'fingerprint'), { code: 'OUTCOME_UNKNOWN' });
+  await writeFile(claimed.path, '{');
+  await assert.rejects(journal.claim('unique-id', 'fingerprint'), { code: 'OUTCOME_UNKNOWN' });
+  await chmod(f.settings.stateDirectory, 0o755);
+  await assert.rejects(journal.prepare(), { code: 'UNSAFE_STATE_DIRECTORY' });
+});
+
+test('unknown history is not success and assistant output is bounded', () => {
+  assert.equal(summarize({ state: state(), revision: 1 }, 'missing').status, 'unknown');
+  const s = state(); s.turnHistory.history.entitiesByKey.tail.items[0].text = 'a'.repeat(20000);
+  const result = summarize({ state: s, revision: 1 });
+  assert.equal(result.output.length, 16000); assert.equal(result.outputTruncated, true);
+});
+
+test('plugin exposes four serializable Magpie tool definitions and validates input', async () => {
+  const { tool } = await plugin();
+  assert.equal(Object.keys(tool).length, 4);
+  for (const definition of Object.values(tool)) {
+    assert.equal(JSON.parse(JSON.stringify(definition.args)).type, 'object');
+    await assert.rejects(definition.execute({ threadId: 'invalid' }), /INVALID_ARGUMENT/);
+  }
+});
