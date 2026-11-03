@@ -12,6 +12,10 @@ Once native ownership is established, Claude, other MCP clients and the desktop 
 
 The plugin owns release mechanics and verification. The calling Claude workflow owns the cooperation contract: stop direct source submissions before handoff, do not concurrently resume or mutate the source, preserve request IDs, and treat pending/unknown outcomes distinctly. The upstream idle check and unsubscribe are separate RPCs; no atomic idle-only release exists in the verified API.
 
+Only the verified Companion broker's exact pre-forwarding busy rejection clears the release intent. The same request can then re-identify the source, recheck idle state and retry unsubscribe. Transport failures and other RPC errors keep the intent because they do not prove non-delivery.
+
+Plugin native commands share a per-thread macOS kernel lock; flow checkpoints share a per-request lock. The lock is retained by the plugin's open file descriptor, not by a helper process or a recovery-directory record. Never unlink `.mutex` files while hosts are running. Upgrades must stop old directory-lock hosts first; dead legacy recovery directories no longer block the new lock, while live or incomplete legacy owners remain refused. The desktop UI and non-plugin clients do not participate in these locks.
+
 Never delete Codex writer-lock files, kill a shared broker, release unrelated sessions or force an active handoff. Unknown source types require their own supported release mechanism. No arbitrary reverse desktop-to-CLI writer takeover is implemented; use the desktop follower path for both conversational directions.
 
 Permission selection is independent of writer ownership. The caller supplies explicit user-authorized modes; the plugin applies and verifies them after native takeover. Default inheritance never silently promotes a task to Full Access. See the README permission contract.
@@ -23,6 +27,7 @@ Persisted phases:
 | `preparing` | Resolve project and prepare intent; retry identical request |
 | `creating` / `creation_unknown` | Creation submitted; reconcile metadata, never create again on uncertainty |
 | `thread_created` | ID retained; temporary creator must exit |
+| `release_rejected` | Broker proved it did not forward release; retry the same ID to recheck and release |
 | `release_requested` / `waiting_source_release` | Release may be pending; wait and retry same ID |
 | `waiting_writer_release` | Writer still exists; no forced takeover |
 | `waiting_desktop` | Native owner not confirmed; repeat same request |
@@ -43,6 +48,10 @@ Persisted phases:
 桌面接管后，Claude、其他 MCP 客户端和桌面输入框都通过同一个原生所有者交互。不要再从旧 Companion 后端恢复该会话。一次任务完成不需要销毁桌面写入方，后续消息仍由它处理；插件每次调用结束会断开自己的跟随订阅。
 
 **插件负责执行释放和核实接管；Claude 调用规范负责配合**：交接前停止源端提交，不并发恢复源会话，保留请求 ID，区分等待、失败与结果未确认。已验证的上游 API 将“检查空闲”和“取消订阅”分成两个调用，没有原子的“仅空闲时释放”参数，因此调用方必须遵守约定。
+
+只有核实过的 Companion broker 返回明确的转发前忙碌拒绝，才清除释放意图并记录 `release_rejected`。原请求重试会重新识别源端、检查空闲，再取消订阅。传输失败和其他 RPC 错误不能证明请求未执行，继续保留意图。
+
+插件原生命令共享会话级 macOS 内核锁，流程进度共享请求级锁。锁由插件持有的文件描述符维持，不依赖辅助进程或恢复目录；宿主运行期间不得删除 `.mutex` 文件。升级前须停止旧目录锁版本的宿主；死亡进程的旧恢复目录不再阻塞，活跃或记录不完整的旧持有方仍会被拒绝。桌面界面及绕过插件的客户端不参与这些锁。
 
 禁止删除 Codex 写锁文件、杀死共享 broker、释放无关会话或强抢正在运行的任务。未知源端需使用其自身支持的释放机制。插件未实现任意桌面到 CLI 的反向写入方迁移；双向对话均通过桌面跟随接口完成。
 

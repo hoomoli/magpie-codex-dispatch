@@ -78,6 +78,36 @@ test('delayed source unload resumes handoff without repeating unsubscribe', asyn
   assert.equal((await f.run('handoff', handoff)).phase, 'desktop_owned');
   assert.equal(releases, 1); assert.ok(!f.events.includes('dispatch'));
 });
+test('definite broker rejection after release intent retries once and then waits for unload', async t => {
+  let held = true; let releases = 0;
+  const f = await fixture(t, { writerPids: async () => held ? [123] : [], releaseSource: async (_id, _endpoint, { beforeRelease }) => {
+    releases++;
+    await beforeRelease({ pid: 123 });
+    if (releases === 1) throw Object.assign(new DispatchError('SOURCE_BUSY', 'Rejected before forwarding'), { delivery: 'not-submitted' });
+  } });
+  const handoff = { requestId: 'rejected-release-0001', threadId };
+  await assert.rejects(f.run('handoff', handoff), { code: 'SOURCE_BUSY' });
+  const saved = await new Operations(f.dir).read(handoff.requestId);
+  assert.equal(saved.phase, 'release_rejected'); assert.equal(saved.source, null);
+  assert.equal((await createFlows(f.options)('handoff', handoff)).phase, 'waiting_source_release');
+  assert.equal((await createFlows(f.options)('handoff', handoff)).phase, 'waiting_source_release');
+  assert.equal(releases, 2);
+  held = false;
+  assert.equal((await f.run('handoff', handoff)).phase, 'desktop_owned');
+  assert.equal(releases, 2);
+});
+for (const code of ['RPC_TIMEOUT', 'RPC_CLOSED', 'RPC_REJECTED', 'ABORTED']) {
+  test(`${code} after release intent never retries an uncertain unsubscribe`, async t => {
+    let releases = 0;
+    const f = await fixture(t, { writerPids: async () => [123], releaseSource: async (_id, _endpoint, { beforeRelease }) => {
+      releases++; await beforeRelease({ pid: 123 }); throw new DispatchError(code, 'Outcome not confirmed');
+    } });
+    const handoff = { requestId: 'unknown-release-0001', threadId };
+    await assert.rejects(f.run('handoff', handoff), { code });
+    for (let i = 0; i < 2; i++) assert.equal((await createFlows(f.options)('handoff', handoff)).phase, 'waiting_source_release');
+    assert.equal(releases, 1);
+  });
+}
 test('busy source is not forcibly released or opened', async t => {
   const f = await fixture(t, { writerPids: async () => [123], releaseSource: async () => { throw new DispatchError('SOURCE_NOT_IDLE', 'active'); } });
   await assert.rejects(f.run('handoff', { requestId: 'busy-source-0001', threadId }), { code: 'SOURCE_NOT_IDLE' });
@@ -101,7 +131,16 @@ test('operation lock serializes callers and recovers a dead process lock', async
   release(); await first;
   const lock = `${store.path(args.requestId)}.lock`;
   await mkdir(lock); await writeFile(join(lock, 'owner.json'), JSON.stringify({ pid: 2147483647 }));
+  await mkdir(`${lock}.recovery`);
   assert.equal(await store.locked(args.requestId, async () => 'recovered'), 'recovered');
+});
+test('a live or incomplete legacy lock cannot be bypassed during upgrade', async t => {
+  const f = await fixture(t); const store = new Operations(f.dir);
+  const lock = `${store.path(args.requestId)}.lock`;
+  await mkdir(lock);
+  await assert.rejects(store.locked(args.requestId, async () => assert.fail('entered')), { code: 'OPERATION_BUSY' });
+  await writeFile(join(lock, 'owner.json'), JSON.stringify({ pid: process.pid }));
+  await assert.rejects(store.locked(args.requestId, async () => assert.fail('entered')), { code: 'OPERATION_BUSY' });
 });
 test('project selection rejects ambiguity, UI IDs, outside roots, and implicit defaults', async t => {
   const f = await fixture(t);

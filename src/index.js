@@ -2,6 +2,7 @@ import { createDispatcher } from './dispatch.js';
 import { createFlows } from './flows.js';
 import { permissionModes } from './permissions.js';
 import { DispatchError } from './desktop.js';
+import { pluginName, pluginVersion, loadedAt } from './version.js';
 
 const threadId = { type: 'string', description: 'UUID of an existing, open local Codex desktop thread.' };
 const turnId = { type: 'string', description: 'Turn ID returned by dispatch or status.' };
@@ -18,10 +19,11 @@ export default async function MagpieCodexDispatch() {
     args: { type: 'object', properties, required, additionalProperties: false },
     async execute(args, context) {
       try {
+        if (operation === 'plugin_info') return JSON.stringify({ name: pluginName, pluginVersion, loadedAt });
         const deadline = AbortSignal.timeout(45000);
         const abort = context?.abort ? AbortSignal.any([context.abort, deadline]) : deadline;
         const executor = ['status', 'dispatch', 'followup', 'stop', 'permissions'].includes(operation) ? run : flows;
-        return JSON.stringify(await executor(operation, args, { ...context, abort }));
+        return JSON.stringify({ ...await executor(operation, args, { ...context, abort }), pluginVersion });
       }
       catch (error) {
         // Magpie marks thrown errors as MCP isError. Do not leak raw filesystem or protocol payloads.
@@ -31,6 +33,7 @@ export default async function MagpieCodexDispatch() {
     },
   });
   return { tool: {
+    codex_plugin_info: define('plugin_info', `Report the loaded ${pluginName} v${pluginVersion} and module load time. No desktop connection or task execution. Use this to verify a plugin reload.`, {}, []),
     codex_projects: define('projects', 'List canonical Codex project IDs and workspace roots. Use these IDs rather than desktop UI project IDs.', {}, []),
     codex_create_task: define('create', 'Create an empty thread in an explicitly selected project or cwd, close the temporary creator, open it in Codex Desktop, and dispatch there. May return pending: repeat identical arguments and requestId. Acceptance is not completion.', {
       requestId, prompt, permissionMode,

@@ -1,5 +1,17 @@
 # magpie-codex-dispatch
 
+当前版本：**0.0.1**，包含跨进程派发锁、崩溃恢复、安全交接重试和运行版本查询。
+
+Magpie 对本地目录安装不显示独立版本徽标，因此插件通过官方支持的 `magpie.name` 显示名称，在已安装列表显示 `magpie-codex-dispatch v0.0.1`；包名和 MCP 工具名不变。升版时同步更新显示名称，版本测试会检查二者一致。列表显示安装元数据，下面的工具用于核实宿主实际运行版本。
+
+要确认 Magpie 实际加载了哪个版本，让 Claude 调用 `codex_plugin_info`，或运行：
+
+```sh
+magpie tool magpie-codex-dispatch_codex_plugin_info --json
+```
+
+返回的 `pluginVersion` 和 `loadedAt`（模块加载时间）在加载时固定；仅修改磁盘文件，不会让旧宿主假报新版。所有成功的工具结果也包含当前宿主的 `pluginVersion`，重放回执亦如此，不改变原回执身份。更新后重载插件，再查询确认。此版本号用于本地代码；Git 标签和包发布属于独立的发布步骤。
+
 [English](README.md) · [控制权规范](docs/ownership.md) · [验收记录](docs/verification.md)
 
 **中文：** 通过 Magpie 新建指定项目的 Codex 会话、安全交接空闲会话，并在 Codex 桌面应用原生对话中实时执行任务。
@@ -20,7 +32,7 @@ Claude / 其他 MCP 客户端
 需要 macOS、正在运行的 Codex 桌面，以及支持社区插件工具的 Magpie：
 
 ```sh
-magpie plugin add github:hoomoli/magpie-codex-dispatch
+magpie plugin add github:hoomoli/magpie-codex-dispatch#v0.0.1
 magpie library mcp agents magpie-codex-dispatch claude
 ```
 
@@ -105,7 +117,11 @@ Magpie 会把此插件的 HTTP MCP 配置写入 Claude。新开 Claude 会话加
 
 **上游限制：** 刚创建的空会话可能不出现在列表，甚至尚未持久化。无法核实时保持 `creation_unknown`，不重复创建。若已掌握原会话 ID，可调用 `codex_recover_creation`；只有来源标记、项目和目录都匹配才绑定，然后重新调用原创建请求。如果原会话无法读取，恢复也会拒绝，不能把缺失当作失败后自动重建。
 
-流程靠重试调用推进，没有后台重试守护进程。`codex_operation_status` 是历史进度，不能代替实时所有权或执行状态。请保留回执文件，删除会失去防重放保护。插件可回收自己已退出进程的操作锁；不完整的记录会要求检查。绝不修改 Codex 写锁文件。
+流程靠重试调用推进，没有后台重试守护进程。`codex_operation_status` 是历史进度，不能代替实时所有权或执行状态。请保留回执文件，删除会失去防重放保护。只有已核实的 Companion broker 明确在转发前拒绝时，才记录 `release_rejected`，允许按原请求重新检查源端并再次释放。超时、断连和含义不明的 RPC 错误仍保留释放意图，不自动重复取消订阅。
+
+原生命令在读取桌面状态前取得会话级内核锁，一直持有到提交和保存回执完成；创建与交接进度另有请求级内核锁。所有插件实例必须共用同一状态目录。争用返回 `BUSY` / `OPERATION_BUSY`，不会后台排队。文件描述符关闭或进程退出（包括崩溃）后，由 macOS 释放锁。请保留 `.mutex` 文件；文件存在不代表锁被占用。绝不修改 Codex 写锁文件。
+
+从旧目录锁版本升级时，先停止旧插件宿主，再加载新版本。已退出进程留下的 `.lock` 和 `.recovery` 目录保留供检查，不再阻塞流程；仍存活或记录不完整的旧持有方不会被绕过。这些锁只协调共用状态目录的插件调用，不能阻止桌面界面或绕过插件的其他客户端并发操作。
 
 ## 控制权边界
 
@@ -136,7 +152,7 @@ socket 必须属于当前用户。状态目录权限为 `0700`、文件为 `0600
 
 ## 开发与验证
 
-无运行时依赖、无需构建。开发使用 Node 22+；Magpie 自带 Bun。
+无 npm 运行时依赖、无需构建。开发使用 Node 22+；Magpie 自带 Bun。文件锁依赖 macOS 系统自带的 `/usr/bin/lockf` 及其继承文件描述符能力；工具不可用时会在提交前报错。
 
 ```sh
 npm run check

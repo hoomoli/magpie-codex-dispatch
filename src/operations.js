@@ -1,8 +1,9 @@
-import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { lstat, open, readFile, rename } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { Journal } from './dispatch.js';
 import { DispatchError } from './desktop.js';
+import { acquireFileLock } from './locks.js';
 
 export const digest = value => createHash('sha256').update(value).digest('hex');
 export function requestKey(value) {
@@ -31,31 +32,24 @@ export class Operations {
     const directory = await open(this.directory, 'r');
     try { await directory.sync(); } finally { await directory.close(); }
   }
-  async locked(id, fn) {
+  async locked(id, fn, { signal } = {}) {
     await this.journal.prepare();
-    const path = `${this.path(id)}.lock`;
-    const acquire = async () => {
-      await mkdir(path, { mode: 0o700 });
-      const file = await open(join(path, 'owner.json'), 'wx', 0o600);
-      try { await file.writeFile(JSON.stringify({ pid: process.pid })); await file.sync(); } finally { await file.close(); }
-    };
-    try { await acquire(); }
-    catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      const recover = `${path}.recovery`;
-      try { await mkdir(recover, { mode: 0o700 }); }
-      catch { throw new DispatchError('OPERATION_BUSY', 'Another caller is recovering this operation. Retry the same requestId.'); }
-      try {
+    const unlock = await acquireFileLock(`${this.path(id)}.mutex`, { signal, busyCode: 'OPERATION_BUSY' });
+    try {
+      // Retain old state for inspection. A dead legacy owner (including an orphaned
+      // .recovery directory) cannot block the new kernel lock. Never bypass a live
+      // or incomplete legacy owner. Stop old plugin hosts before upgrading.
+      const legacy = `${this.path(id)}.lock`;
+      const info = await lstat(legacy).catch(error => { if (error.code !== 'ENOENT') throw error; });
+      if (info) {
         let owner;
-        try { owner = JSON.parse(await readFile(join(path, 'owner.json'), 'utf8')); }
-        catch { throw new DispatchError('OPERATION_BUSY', 'Operation ownership is incomplete. Inspect plugin state before recovery; nothing was resubmitted.'); }
-        if (!Number.isSafeInteger(owner.pid) || owner.pid <= 1 || alive(owner.pid)) throw new DispatchError('OPERATION_BUSY', 'This operation is already running. Retry the same requestId later.');
-        // Only plugin-owned locks are reclaimed. Codex writer locks are never changed.
-        const tombstone = `${path}.${randomUUID()}.stale`;
-        await rename(path, tombstone); await rm(tombstone, { recursive: true });
-      } finally { await rm(recover, { recursive: true }); }
-      try { await acquire(); } catch { throw new DispatchError('OPERATION_BUSY', 'Another caller resumed this operation.'); }
-    }
-    try { return await fn(); } finally { await rm(path, { recursive: true }); }
+        try { owner = JSON.parse(await readFile(join(legacy, 'owner.json'), 'utf8')); }
+        catch { throw new DispatchError('OPERATION_BUSY', 'Legacy operation ownership is incomplete. Inspect plugin state before retrying.'); }
+        if (!Number.isSafeInteger(owner.pid) || owner.pid <= 1 || alive(owner.pid)) {
+          throw new DispatchError('OPERATION_BUSY', 'A legacy plugin operation may still be running. Stop the old host before retrying.');
+        }
+      }
+      return await fn();
+    } finally { await unlock(); }
   }
 }

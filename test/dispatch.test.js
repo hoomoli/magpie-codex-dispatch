@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
-import { mkdtemp, rm, writeFile, chmod } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, chmod, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createDispatcher, Journal } from '../src/dispatch.js';
 import { Desktop, summarize } from '../src/desktop.js';
 import plugin from '../src/index.js';
+import { spawn } from 'node:child_process';
 
 const threadId = '00000000-0000-4000-8000-000000000001';
 const turnId = 'turn-example';
@@ -49,7 +50,10 @@ async function fixture(t, options = {}) {
           else if (options.dropMutation) socket.destroy();
           else if (options.silentMutation) { /* Simulate an accepted command with a lost reply. */ }
           else if (message.method === 'thread-follower-update-thread-settings') { updated = true; reply({ applied: !options.rejectSettings }); }
-          else if (message.method === 'thread-follower-start-turn') reply({ result: { turn: { id: turnId } } });
+          else if (message.method === 'thread-follower-start-turn') {
+            if (options.onStart) options.onStart(reply);
+            else reply({ result: { turn: { id: turnId } } });
+          }
           else if (message.method === 'thread-follower-steer-turn') reply({ result: { turnId } });
           else reply({ ok: !options.rejectStop, interruptedTurnId: turnId });
         } else if (message.method === 'thread-stream-following-changed' && message.params.following && !options.noSnapshot) {
@@ -96,6 +100,46 @@ test('busy target fails before submission and allows the same ID after preflight
   const f = await fixture(t, { status: 'inProgress' });
   for (let i = 0; i < 2; i++) await assert.rejects(f.run('dispatch', command), { code: 'THREAD_NOT_IDLE' });
   assert.equal(mutations(f.calls).length, 0);
+});
+
+async function dispatchInProcess(settings, args) {
+  const source = `import { createDispatcher } from ${JSON.stringify(new URL('../src/dispatch.js', import.meta.url).href)};
+    try { console.log(JSON.stringify(await createDispatcher(${JSON.stringify(settings)})('dispatch', ${JSON.stringify(args)}))); }
+    catch (error) { console.log(JSON.stringify({ code: error.code })); }`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', source], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = ''; let errors = '';
+  child.stdout.setEncoding('utf8').on('data', chunk => { output += chunk; });
+  child.stderr.setEncoding('utf8').on('data', chunk => { errors += chunk; });
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Dispatch worker timed out')); }, 5000);
+    child.once('error', error => { clearTimeout(timer); reject(error); });
+    child.once('close', code => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`Worker failed: ${errors}`)); });
+  });
+  return JSON.parse(output);
+}
+
+test('independent dispatchers and processes serialize a thread and recheck fresh state', async t => {
+  let ready; const entered = new Promise(resolve => { ready = resolve; });
+  let respond; let running = false;
+  const f = await fixture(t, { snapshot: () => state(running ? 'inProgress' : 'completed'), onStart: reply => { respond = reply; ready(); } });
+  const settings = { ...f.settings, timeoutMs: 3000 };
+  const first = createDispatcher(settings)('dispatch', command);
+  // Attach a rejection handler before testing contenders, so failures still clean up.
+  first.catch(() => {});
+  await entered;
+  try {
+    const second = { ...command, requestId: 'competing-command-0002' };
+    await assert.rejects(createDispatcher(settings)('dispatch', second), { code: 'BUSY' });
+    assert.equal((await dispatchInProcess(settings, second)).code, 'BUSY');
+    assert.equal(mutations(f.calls).length, 1);
+    running = true;
+    respond({ result: { turn: { id: turnId } } });
+    await first;
+    // The failed contender's receipt is released; a retry gets a new snapshot,
+    // which now reports busy instead of accidentally steering the first turn.
+    assert.equal((await dispatchInProcess(settings, second)).code, 'THREAD_NOT_IDLE');
+    assert.equal(mutations(f.calls).length, 1);
+  } finally { respond({ result: { turn: { id: turnId } } }); await first; }
 });
 
 for (const option of ['dropMutation', 'silentMutation']) {
@@ -173,13 +217,38 @@ test('unknown history is not success and assistant output is bounded', () => {
 
 test('plugin exposes serializable tool definitions and validates mutation input', async () => {
   const { tool } = await plugin();
-  assert.equal(Object.keys(tool).length, 11);
+  assert.equal(Object.keys(tool).length, 12);
   for (const definition of Object.values(tool)) {
     assert.equal(JSON.parse(JSON.stringify(definition.args)).type, 'object');
   }
   for (const name of ['codex_dispatch', 'codex_followup', 'codex_stop', 'codex_create_task', 'codex_handoff']) {
     await assert.rejects(tool[name].execute({ threadId: 'invalid' }), /INVALID_ARGUMENT/);
   }
+});
+
+test('plugin info and status report the loaded package version without starting work', async t => {
+  const f = await fixture(t);
+  const previous = process.env.MAGPIE_CODEX_SOCKET;
+  let tool;
+  try {
+    process.env.MAGPIE_CODEX_SOCKET = f.settings.socketPath;
+    ({ tool } = await plugin());
+  } finally {
+    if (previous === undefined) delete process.env.MAGPIE_CODEX_SOCKET;
+    else process.env.MAGPIE_CODEX_SOCKET = previous;
+  }
+  const metadata = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  const info = JSON.parse(await tool.codex_plugin_info.execute({}));
+  assert.equal(info.name, metadata.name);
+  assert.equal(info.pluginVersion, metadata.version);
+  assert.equal(metadata.magpie.name, `${metadata.name} v${metadata.version}`);
+  assert.ok(Number.isFinite(Date.parse(info.loadedAt)));
+  assert.match(tool.codex_plugin_info.description, new RegExp(`v${metadata.version.replaceAll('.', '\\.')}`));
+  assert.equal(f.calls.length, 0);
+  const status = JSON.parse(await tool.codex_status.execute({ threadId }));
+  assert.equal(status.pluginVersion, info.pluginVersion);
+  assert.equal(mutations(f.calls).length, 0);
+  assert.deepEqual(JSON.parse(await tool.codex_plugin_info.execute({})), info);
 });
 
 const fullPermissions = { approvalPolicy: 'never', approvalsReviewer: 'user', sandboxPolicy: { type: 'dangerFullAccess' }, activePermissionProfile: { id: ':danger-full-access' } };

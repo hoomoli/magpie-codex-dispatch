@@ -2,6 +2,18 @@
 
 [中文说明](README.zh-CN.md) · [Ownership contract / 控制权规范](docs/ownership.md)
 
+Current version: **0.0.1** — cross-process dispatch locking, crash recovery, safe handoff retries and loaded-version reporting.
+
+For local-directory installs, Magpie hides its separate version badge. The supported `magpie.name` metadata therefore displays `magpie-codex-dispatch v0.0.1` in the installed list; the package and MCP tool names stay unchanged. Update this display name with the package version; the version test checks that they match. The list reflects installed metadata, while the tool below verifies the running host.
+
+To check the version actually loaded by Magpie, ask Claude to call `codex_plugin_info`, or run:
+
+```sh
+magpie tool magpie-codex-dispatch_codex_plugin_info --json
+```
+
+It returns `pluginVersion` and `loadedAt` (module load time). These values are captured at load, so editing files alone does not make an old host claim the new version. All successful tool results include the current host's `pluginVersion`, including replayed receipts; this does not change the original receipt's identity. Reload the plugin after updating and check this tool again. The local checkout is versioned; a Git tag or package publication is a separate release step.
+
 **English:** A Magpie plugin for creating project-specific Codex conversations, handing off idle Companion sessions, and dispatching tasks with live execution in the native Codex desktop app.
 
 **中文：** 通过 Magpie 新建指定项目的 Codex 会话、安全交接空闲会话，并在 Codex 桌面应用原生对话中实时执行任务。
@@ -20,7 +32,7 @@ Codex Desktop owns execution, permissions, approvals and live rendering. Claude'
 Requires macOS, a running Codex desktop app, and Magpie with community plugin tools enabled:
 
 ```sh
-magpie plugin add github:hoomoli/magpie-codex-dispatch
+magpie plugin add github:hoomoli/magpie-codex-dispatch#v0.0.1
 magpie library mcp agents magpie-codex-dispatch claude
 ```
 
@@ -46,6 +58,7 @@ Plugin-specific MCP exposes these names. The combined endpoint prefixes them wit
 
 | Tool | Main arguments | Result |
 | --- | --- | --- |
+| `codex_plugin_info` | none | Loaded plugin version and module load time; no desktop access |
 | `codex_projects` | none | Canonical project IDs, names and workspace roots |
 | `codex_create_task` | `requestId`, `prompt`; project selection below | Create, attach and dispatch; can return a resumable pending phase |
 | `codex_ownership` | `threadId` | Desktop ownership or external/unattached writer information |
@@ -103,7 +116,11 @@ Permission changes persist even if a later preflight fails; inspect status befor
 
 Durable state keeps fingerprints, IDs, project/workspace metadata and progress, not prompts or conversation output. Repeated acknowledged commands return the original receipt, including after restart. Creation lost before saving its thread ID is reconciled using a unique source marker and a bounded metadata scan; if unresolved it stays `creation_unknown` rather than creating a duplicate. The scan examines at most 1,000 list entries and reads at most 30 candidates with omitted markers. Absence is not treated as proof of failure. Empty threads may be omitted from listings or may not yet be persisted upstream. If the original ID is known, `codex_recover_creation` verifies its unique source marker, cwd and project before binding it; then retry the original create arguments. An unreadable thread cannot be recovered or silently recreated.
 
-Progress is advanced by retry calls; there is no background retry worker. `codex_operation_status` is a saved checkpoint, not a live ownership or completion assertion. Do not delete receipt files: doing so removes replay protection. Plugin operation locks can recover a dead process; incomplete lock records are reported for inspection. Codex's writer-lock files are never modified.
+Progress is advanced by retry calls; there is no background retry worker. `codex_operation_status` is a saved checkpoint, not a live ownership or completion assertion. Do not delete receipt files: doing so removes replay protection. A verified Companion busy rejection before forwarding records `release_rejected`; retry the same request to recheck the source and try release again. Timeouts, disconnects and ambiguous RPC errors retain the release intent and never automatically repeat unsubscribe.
+
+Native commands acquire a per-thread kernel lock before reading desktop state and retain it through submission and receipt persistence. Create/handoff progress uses a per-request kernel lock. All plugin instances must share the same state directory. Contention returns `BUSY` / `OPERATION_BUSY`; it does not queue work. macOS releases locks when the owning descriptor closes or the process exits, including a crash. Keep the `.mutex` files in place; their existence does not mean a lock is held. Codex's writer-lock files are never modified.
+
+When upgrading from directory-based locks, stop old plugin hosts before loading this version. Dead legacy `.lock` and `.recovery` directories are retained but do not block progress; a live or incomplete legacy owner still requires inspection. These plugin locks do not serialize desktop UI actions or other clients that bypass the plugin.
 
 ## Ownership and limitations
 
@@ -132,7 +149,7 @@ Sockets must belong to the current user. State directory permissions are `0700`,
 
 ## Verification and development
 
-No runtime dependencies or build step. Node 22+ for development; Magpie supplies Bun.
+No npm runtime dependencies or build step. Node 22+ for development; Magpie supplies Bun. File locking requires the macOS system utility `/usr/bin/lockf` with inherited-file-descriptor support; an unavailable utility fails before submission.
 
 ```sh
 npm run check

@@ -1,6 +1,24 @@
+> Release numbering starts at **0.0.1**. Versions 0.2.x below are historical local development labels, not published releases. The initial release includes those verified changes; historical runtime observations retain their original version strings.
+
 # Verification / 验收记录
 
-Local acceptance on **2026-11-03**, release **0.2.1**. No credentials, private conversations, machine paths or raw runtime logs are published here.
+Verification history on **2026-11-03**, through local version **0.2.2**. Original 0.2.1 acceptance is retained below. No credentials, private conversations, machine paths or raw runtime logs are published here.
+
+## Version 0.2.2 (local, unpublished) / 0.2.2（本地，未发布）
+
+Verified locally on **2026-11-03**, after the 0.2.1 permission changes. Syntax checks and **52/52 tests** pass under Node and Magpie Bun 1.4.4, including the version-reporting regression. After reload, installed `codex_plugin_info` returned `pluginVersion: "0.2.2"` with a module load timestamp; an existing operation-status result also carried `pluginVersion: "0.2.2"`. The package has not been released.
+
+- Independent dispatcher instances and separate processes cannot submit concurrently to the same thread. A contender returns `BUSY`, releases its unsubmitted receipt, and reads a fresh busy snapshot on retry.
+- A real child process holds the operation lock after the `lockf` helper exits. After `SIGKILL`, a new caller acquires the same inode without deleting locks or running directory recovery. Dead legacy `.lock` plus `.recovery` state no longer blocks; live or incomplete legacy ownership remains refused.
+- A verified broker rejection after persisted release intent allows one new attempt. Timeout, disconnect, cancellation and ambiguous RPC errors never resubmit an uncertain unsubscribe.
+- These regression tests use temporary state and socket fixtures. They do not seize existing desktop or Companion conversations.
+- A separate isolated check used the real bundled app-server, a local model stub and a simulated desktop snapshot adapter: two simultaneous dispatchers produced one `turn/start`, one acceptance and one `BUSY`; retry returned `THREAD_NOT_IDLE`. No live desktop session or external model was used.
+- Installed-host reload: toggling this plugin off/on replaced the Bun host. A lock held by a separate process caused the installed tool to return `BUSY` without dispatching. After releasing it, actual Claude Code called the configured Magpie MCP endpoint using the same request ID; dispatch succeeded and an identical retry returned the same thread/turn with `replayed: true`.
+- The native desktop completed that marker task in about 85 seconds with exactly `MAGPIE_RELOAD_OK`. Claude's bounded five status checks ended while the turn was still running; subsequent desktop and installed-plugin reads confirmed `completed`, no error and the exact output. No permissions were changed and the task used no tools or project files. This is execution/state acceptance, not a new visual or per-token rendering audit. Crash recovery and rejected-release cases remain isolated tests.
+
+本次在 0.2.1 权限改动之上完成本地修复，Node 与 Magpie Bun 均通过 **51 项测试**。新增验证包含真实子进程的互斥与强制退出恢复、旧恢复目录残留，以及释放被明确拒绝和结果未知时的不同重试行为。另用隔离的真实 bundled app-server、本地模型桩和模拟桌面快照适配器复测并发：两个调用只产生一次启动，另一个返回 `BUSY`，重试后为 `THREAD_NOT_IDLE`。
+
+随后已重载安装态 Magpie 插件，确认 Bun 宿主换代。独立进程持锁时，安装态工具返回 `BUSY`；释放锁后，真实 Claude 经已配置的 MCP 成功派发，并以相同请求 ID 获得同一轮的重放回执。桌面约 85 秒后输出 `MAGPIE_RELOAD_OK`。Claude 的五次有界查询先结束，之后通过桌面和安装态插件确认最终完成、无错误、输出匹配。任务没有调用工具、操作项目文件或修改权限。本次完成运行与状态验收，未重新进行视觉或逐字渲染验收；崩溃恢复与释放拒绝仍采用隔离测试。以下保留原发布版本的验收记录。
 
 ## Environment
 

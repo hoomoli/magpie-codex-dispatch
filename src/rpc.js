@@ -4,6 +4,7 @@ import { access, lstat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, isAbsolute } from 'node:path';
 import { DispatchError } from './desktop.js';
+import { pluginVersion } from './version.js';
 
 const MAX_BYTES = 32 * 1024 * 1024;
 const ALLOWED = new Set(['initialize', 'project/list', 'project/read', 'thread/start', 'thread/read',
@@ -41,10 +42,15 @@ export class AppServer {
           const waiter = this.pending.get(message.id);
           if (!waiter) continue;
           clearTimeout(waiter.timer); this.pending.delete(message.id);
-          if (message.error) waiter.reject(new DispatchError(
-            /busy/i.test(message.error.message ?? '') ? 'SOURCE_BUSY' : 'RPC_REJECTED',
-            /busy/i.test(message.error.message ?? '') ? 'The source broker is busy; no takeover was attempted.' : 'The app-server rejected the request. Check version compatibility and the target thread.'));
-          else waiter.resolve(message.result);
+          if (message.error) {
+            // Companion 1.0.6 rejects this exact error before forwarding the RPC.
+            // A generic error containing "busy" is not proof of non-delivery.
+            const notSubmitted = this.companion && message.error.code === -32001 && message.error.message === 'Shared Codex broker is busy.';
+            const error = new DispatchError(notSubmitted ? 'SOURCE_BUSY' : 'RPC_REJECTED',
+              notSubmitted ? 'The source broker is busy; no takeover was attempted.' : 'The app-server rejected the request. Check version compatibility and the target thread.');
+            if (notSubmitted) error.delivery = 'not-submitted';
+            waiter.reject(error);
+          } else waiter.resolve(message.result);
         }
       } catch { this.fail(new DispatchError('INVALID_RPC_RESPONSE', 'Invalid or oversized app-server response.')); }
     });
@@ -75,10 +81,11 @@ export class AppServer {
     this.attach(this.socket, this.socket);
     const result = await this.initialize(false);
     if (result?.userAgent !== 'codex-companion-broker') throw new DispatchError('UNSUPPORTED_SOURCE', 'Only the verified Codex Companion broker protocol is supported.');
+    this.companion = true;
     return this;
   }
   async initialize(experimentalApi) {
-    const result = await this.request('initialize', { clientInfo: { name: 'magpie_codex_dispatch', version: '0.2.1' }, capabilities: { experimentalApi } });
+    const result = await this.request('initialize', { clientInfo: { name: 'magpie_codex_dispatch', version: pluginVersion }, capabilities: { experimentalApi } });
     this.input.write(JSON.stringify({ method: 'initialized', params: {} }) + '\n');
     return result;
   }

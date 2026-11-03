@@ -66,7 +66,7 @@ export function createFlows(options = {}) {
         const recovered = { ...state, threadId: thread.id, phase: 'thread_created', projectVerified: true, reason: null };
         await store.save(args.requestId, recovered);
         return publicState(recovered);
-      });
+      }, { signal: abort });
     }
     validate(operation, args);
     if (!['create', 'handoff'].includes(operation)) throw new DispatchError('INVALID_ARGUMENT', 'Unknown flow.');
@@ -144,7 +144,16 @@ export function createFlows(options = {}) {
         const pids = await writers(state.threadId);
         if (pids.length) {
           if (operation === 'handoff' && !state.source && state.phase !== 'release_requested') {
-            await release(state.threadId, args.sourceEndpoint, { signal: abort, beforeRelease: async source => save({ source, phase: 'release_requested' }) });
+            try {
+              await release(state.threadId, args.sourceEndpoint, { signal: abort, beforeRelease: async source => save({ source, phase: 'release_requested' }) });
+            } catch (error) {
+              if (error.delivery === 'not-submitted') {
+                await save({ source: null, phase: 'release_rejected', reason: error.code });
+              }
+              // Timeout/disconnect/ambiguous RPC errors retain the durable intent.
+              // Only a verified rejection before forwarding permits a new attempt.
+              throw error;
+            }
             await save({ phase: 'waiting_source_release', reason: 'Source accepted unsubscribe; waiting for its writer to unload.' });
           } else await save({ phase: state.source || state.phase === 'release_requested' ? 'waiting_source_release' : 'waiting_writer_release',
             reason: 'A writer still holds this thread. Retry the same ID; the plugin will not force release.' });
@@ -169,6 +178,6 @@ export function createFlows(options = {}) {
         if (error.code !== 'OUTCOME_UNKNOWN') throw error;
       }
       return publicState(state);
-    });
+    }, { signal: abort });
   };
 }

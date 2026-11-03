@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Desktop, DispatchError, summarize } from './desktop.js';
+import { acquireFileLock } from './locks.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -70,12 +71,11 @@ export class Journal {
 export function createDispatcher({ socketPath, stateDirectory = join(homedir(), '.local', 'state', 'magpie-codex-dispatch'),
   timeoutMs = 8000, desktopFactory = options => new Desktop(options) } = {}) {
   const journal = new Journal(stateDirectory);
-  const active = new Set();
   return async function execute(operation, args, { abort } = {}) {
     validate(operation, args);
     let claim;
     let submitted = false;
-    let locked = false;
+    let unlock;
     let desktop;
     try {
       if (operation !== 'status') {
@@ -83,9 +83,7 @@ export function createDispatcher({ socketPath, stateDirectory = join(homedir(), 
         if (args.permissionMode !== undefined && args.permissionMode !== 'inherit') values.push(args.permissionMode);
         claim = await journal.claim(args.requestId, hash(JSON.stringify(values)));
         if (claim.result) return claim.result;
-        if (active.has(args.threadId)) throw new DispatchError('BUSY', 'Another plugin command is being submitted to this thread.');
-        active.add(args.threadId);
-        locked = true;
+        unlock = await acquireFileLock(join(stateDirectory, `thread-${hash(args.threadId.toLowerCase())}.mutex`), { signal: abort });
       }
       desktop = desktopFactory({ socketPath, timeoutMs, signal: abort });
       let snapshot = await desktop.connect(args.threadId);
@@ -157,8 +155,7 @@ export function createDispatcher({ socketPath, stateDirectory = join(homedir(), 
       if (submitted && error.code !== 'OUTCOME_UNKNOWN') throw new DispatchError('OUTCOME_UNKNOWN', 'The command may have been accepted but its receipt was not confirmed. Check status; do not resend with a new requestId.');
       throw error;
     } finally {
-      desktop?.close();
-      if (locked) active.delete(args.threadId);
+      try { desktop?.close(); } finally { await unlock?.(); }
     }
   };
 }

@@ -43,15 +43,24 @@ test('wrong source handshake cannot be treated as a supported broker', async t =
 test('busy replies are explicit, timeout is bounded, cancellation cleans pending RPCs', async t => {
   const endpoint = await broker(t, (socket, m) => {
     if (m.method === 'initialize') reply(socket, m.id, { userAgent: 'codex-companion-broker' });
-    if (m.method === 'thread/unsubscribe') socket.write(JSON.stringify({ id: m.id, error: { message: 'Shared Codex broker is busy.' } }) + '\n');
+    if (m.method === 'thread/unsubscribe') socket.write(JSON.stringify({ id: m.id, error: { code: -32001, message: 'Shared Codex broker is busy.' } }) + '\n');
   });
   const controller = new AbortController();
   const client = new AppServer({ signal: controller.signal, timeoutMs: 80 }); t.after(() => client.close());
   await client.connectCompanion(endpoint);
-  await assert.rejects(client.request('thread/unsubscribe'), { code: 'SOURCE_BUSY' });
+  await assert.rejects(client.request('thread/unsubscribe'), { code: 'SOURCE_BUSY', delivery: 'not-submitted' });
   await assert.rejects(client.request('thread/read'), { code: 'RPC_TIMEOUT' });
   const pending = client.request('thread/read'); controller.abort();
   await assert.rejects(pending, { code: 'ABORTED' }); assert.equal(client.pending.size, 0);
+});
+test('generic busy and RPC errors do not authorize release resubmission', async t => {
+  const endpoint = await broker(t, (socket, m) => {
+    if (m.method === 'initialize') reply(socket, m.id, { userAgent: 'codex-companion-broker' });
+    else socket.write(JSON.stringify({ id: m.id, error: { code: -32000, message: 'Shared Codex broker is busy.' } }) + '\n');
+  });
+  const client = new AppServer(); t.after(() => client.close());
+  await client.connectCompanion(endpoint);
+  await assert.rejects(client.request('thread/unsubscribe'), error => error.code === 'RPC_REJECTED' && error.delivery === undefined);
 });
 test('source endpoints and executable paths must be explicit local resources', async t => {
   const root = await mkdtemp('/tmp/mcd-rpc-path-'); t.after(() => rm(root, { recursive: true }));
