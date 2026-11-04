@@ -4,7 +4,7 @@
   "magpie": {
     "name": "magpie-codex-dispatch"
   },
-  "description": "Create and dispatch Codex desktop tasks through Magpie, with project selection and safe session handoff. 通过 Magpie 在 Codex 桌面新建和派发任务，支持项目选择与安全会话交接。",
+  "description": "通过 Magpie 在 Codex 桌面新建和派发任务，支持项目选择与安全会话交接。 Create and dispatch Codex desktop tasks through Magpie, with project selection and safe session handoff.",
   "type": "module",
   "main": "src/index.js",
   "exports": "./src/index.js",
