@@ -23,7 +23,8 @@ export async function resolveBinary(explicit = process.env.MAGPIE_CODEX_BINARY) 
 }
 
 export class AppServer {
-  constructor({ signal, timeoutMs = 8000 } = {}) {
+  constructor({ signal, timeoutMs = 8000, execution = false, onNotification, onRequest, onFailure } = {}) {
+    Object.assign(this, { execution, onNotification, onRequest, onFailure });
     this.signal = signal; this.timeoutMs = timeoutMs; this.pending = new Map(); this.buffer = ''; this.next = 0;
     this.onAbort = () => this.fail(new DispatchError('ABORTED', 'The caller cancelled the operation.'));
   }
@@ -39,6 +40,11 @@ export class AppServer {
           const line = this.buffer.slice(0, index); this.buffer = this.buffer.slice(index + 1);
           if (!line.trim()) continue;
           const message = JSON.parse(line);
+          if (message.method) {
+            if (message.id !== undefined) this.onRequest?.(message);
+            else this.onNotification?.(message);
+            continue;
+          }
           const waiter = this.pending.get(message.id);
           if (!waiter) continue;
           clearTimeout(waiter.timer); this.pending.delete(message.id);
@@ -90,7 +96,7 @@ export class AppServer {
     return result;
   }
   request(method, params = {}) {
-    if (!ALLOWED.has(method)) return Promise.reject(new DispatchError('UNSUPPORTED_METHOD', 'This temporary client cannot execute turns or arbitrary commands.'));
+    if (!ALLOWED.has(method) && !(this.execution && !this.companion && new Set(['thread/archive', 'thread/unarchive', 'thread/resume', 'thread/settings/update', 'turn/start', 'turn/steer', 'turn/interrupt']).has(method))) return Promise.reject(new DispatchError('UNSUPPORTED_METHOD', 'This temporary client cannot execute turns or arbitrary commands.'));
     if (this.failure) return Promise.reject(this.failure);
     return new Promise((resolve, reject) => {
       const id = ++this.next;
@@ -100,8 +106,14 @@ export class AppServer {
       catch { clearTimeout(timer); this.pending.delete(id); reject(new DispatchError('RPC_CLOSED', 'App-server input is unavailable.')); }
     });
   }
+  respond(id, result) {
+    if (this.failure) throw this.failure;
+    this.input.write(JSON.stringify({ id, result }) + "\n");
+  }
   fail(error) {
+    const first = !this.failure;
     this.failure ??= error;
+    if (first) this.onFailure?.(error);
     for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(this.failure); }
     this.pending.clear();
   }

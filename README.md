@@ -2,7 +2,7 @@
 
 [中文说明](README.zh-CN.md) · [Ownership contract / 控制权规范](docs/ownership.md)
 
-Current version: **0.0.3** — event-driven Claude completion/review channels, cross-process dispatch locking, crash recovery and loaded-version reporting.
+Current version: **0.0.4** — background creation without navigation, desktop follower streaming, and event-driven Claude review.
 
 The display name is `magpie-codex-dispatch`; the version belongs in Magpie’s separate version badge. Local-directory installs hide that badge, so use `codex_plugin_info` to verify their loaded version. Git-based installs also show a commit identifier managed by Magpie.
 
@@ -21,18 +21,20 @@ It returns `pluginVersion` and `loadedAt` (module load time). These values are c
 ```text
 Claude / other MCP client
   -> existing Magpie MCP gateway and plugin host
-    -> create empty thread -> temporary creator exits -> open native thread
-    -> native desktop IPC: dispatch / follow-up / stop / status
+    -> background worker: create, verify permissions, execute
+    -> catalog event: ordinary sidebar refresh without navigation
+    -> native follower stream: progress, approvals, follow-up and stop
+    -> completion event: wake Claude for review
 ```
 
-Codex Desktop owns execution, permissions, approvals and live rendering. Claude's model does not need to route through Magpie. There is no separate dashboard or persistent Codex execution server added by this plugin. Creating a thread or reading the project catalog briefly starts the app's bundled public app-server, then closes it. That temporary client cannot execute turns. Existing native-thread dispatch uses the running desktop directly.
+New tasks execute in a detached worker using the app-bundled AppServer. The worker verifies effective permissions, publishes native follower snapshots, and forwards approvals and guarded interruptions. The desktop displays progress without a separate dashboard. Existing desktop-thread dispatch and explicit Companion handoff retain their native-owner path. No new task is opened or pinned automatically.
 
 ## Install and connect Claude
 
 Requires macOS, a running Codex desktop app, and Magpie with community plugin tools enabled:
 
 ```sh
-magpie plugin add github:hoomoli/magpie-codex-dispatch#v0.0.3
+magpie plugin add github:hoomoli/magpie-codex-dispatch
 magpie library mcp agents magpie-codex-dispatch claude
 ```
 
@@ -48,7 +50,7 @@ Magpie writes its plugin-specific HTTP MCP entry into Claude's configuration. St
 
 Ask Claude, for example:
 
-> Use the Magpie Codex tools to create a new task in project `my-project`. First list projects. Use one stable requestId and identical arguments for pending retries. After acceptance, poll status for the returned threadId and turnId. Task: …
+> Use the Magpie Codex tools to create a task in project `my-project`. First list projects. Reuse the same requestId on retries. After acceptance, wait for the configured completion hook to wake this session for review; do not poll. Task: …
 
 For an old Companion session, first stop sending commands to that thread through the old openai-codex integration. Ask Claude to inspect ownership, hand off the idle session, and wait for `desktop_owned`. Subsequent commands use this plugin's follower tools; the desktop remains the writer.
 
@@ -60,7 +62,7 @@ Plugin-specific MCP exposes these names. The combined endpoint prefixes them wit
 | --- | --- | --- |
 | `codex_plugin_info` | none | Loaded plugin version and module load time; no desktop access |
 | `codex_projects` | none | Canonical project IDs, names and workspace roots |
-| `codex_create_task` | `requestId`, `prompt`; project selection below | Create, attach and dispatch; can return a resumable pending phase |
+| `codex_create_task` | `requestId`, `prompt`; project selection below | Create and execute in the background; refresh sidebar without navigation |
 | `codex_ownership` | `threadId` | Desktop ownership or external/unattached writer information |
 | `codex_handoff` | `threadId`, `requestId`, optional `sourceEndpoint` | Release one idle Companion thread, wait for unload and attach desktop |
 | `codex_recover_creation` | `requestId`, `threadId` | Verify source marker/project/cwd and bind an uncertain creation; does not dispatch |
@@ -85,7 +87,7 @@ Plugin-specific MCP exposes these names. The combined endpoint prefixes them wit
 
 Select an exact unique `projectName` or canonical `projectId` from `codex_projects`. Desktop UI project IDs can differ from backend IDs. One project root supplies the working directory; multiple roots require an explicit `cwd` inside a root. An explicit absolute `cwd` without a project creates a projectless thread. No implicit current-project default is used. Paths are resolved through filesystem aliases and checked before creation. This creates a **conversation**, not a new project.
 
-Optional `title` is limited to 160 characters; its default is `Magpie task`, so empty threads are named before the creator exits. The creation response and native workspace are checked before dispatch.
+Optional `title` is limited to 160 characters and defaults to `Magpie task`. The new empty thread is archived and immediately restored once, before execution, to produce a genuine catalog event. After the background worker owns the restored thread and starts the task, it forwards that event to refresh the sidebar without navigation. No existing or active user thread is cycled.
 
 ### Permission modes
 
@@ -100,7 +102,7 @@ Optional `title` is limited to 160 characters; its default is `Magpie task`, so 
 
 The caller must pass the user's requested mode explicitly when creating a task with a particular permission level. A selection in a different thread is not authorization for every new task. Legacy `sandbox: read-only/workspace-write` maps to the corresponding explicit mode; conflicting fields are rejected. Version 0.2.0 forced workspace-write/on-request by default; 0.2.1 inherits instead.
 
-After native attachment, the plugin applies explicit modes to the idle thread, reads a fresh snapshot, and pins them to the start request. An unconfirmed update or permission mismatch prevents task submission. The temporary creator's permissions alone are insufficient because native takeover can replace them. Follow-up/stop never change permissions.
+New background tasks verify the AppServer's effective permissions before turn/start. Existing desktop tasks apply and verify explicit permission settings through their native owner. Default inheritance preserves the backend configuration; it never silently promotes a task to Full Access.
 
 To correct an existing idle thread without starting work, call `codex_set_permissions` with its `threadId`, a unique `requestId`, and `permissionMode: "full-access"` after explicit user authorization. `codex_status.permissions` describes the loaded runtime's current/last-turn permissions; `nextTurnPermissions` describes settings for the next turn. Neither field is a historical permission lookup for an arbitrary `turnId`. A settings-only update may leave these fields different until a new turn begins. Receipts are historical acknowledgements; read status for current settings.
 
@@ -110,13 +112,13 @@ Permission changes persist even if a later preflight fails; inspect status befor
 
 1. Save one request ID per logical operation. IDs contain 8–128 letters, digits, underscores or hyphens.
 2. For pending create/handoff phases, wait roughly 2–5 seconds and repeat the **same tool, arguments and requestId**. A tool response can arrive before desktop attachment or source unload finishes. Source unload was observed to take about a minute.
-3. On `phase: accepted`, save `threadId` and `turnId`. Poll `codex_status` with both. Acceptance is not completion.
+3. On `phase: accepted`, save `threadId` and `turnId`. With the completion hook installed, wait for the event-driven wakeup; do not poll. Use `codex_status` for diagnostics or to inspect a specific turn. Acceptance is not completion.
 4. Handle `inProgress`, `completed`, `failed`, `interrupted`, unknown history and approval requests separately. Handle approvals in the native app.
 5. A lost mutation acknowledgement is `OUTCOME_UNKNOWN` / `dispatch_unknown`. It is never automatically resubmitted. Inspect status; do not invent a new ID to retry uncertain work.
 
-Durable state keeps fingerprints, IDs, project/workspace metadata and progress, not prompts or conversation output. Repeated acknowledged commands return the original receipt, including after restart. Creation lost before saving its thread ID is reconciled using a unique source marker and a bounded metadata scan; if unresolved it stays `creation_unknown` rather than creating a duplicate. The scan examines at most 1,000 list entries and reads at most 30 candidates with omitted markers. Absence is not treated as proof of failure. Empty threads may be omitted from listings or may not yet be persisted upstream. If the original ID is known, `codex_recover_creation` verifies its unique source marker, cwd and project before binding it; then retry the original create arguments. An unreadable thread cannot be recovered or silently recreated.
+Operation receipts keep fingerprints, IDs, project/workspace metadata and progress. Background workers additionally keep a private terminal output summary for late notification recovery; input files are private and removed when consumed. The remainder of this paragraph describes legacy native creation recovery. Repeated acknowledged commands return the original receipt, including after restart. Creation lost before saving its thread ID is reconciled using a unique source marker and a bounded metadata scan; if unresolved it stays `creation_unknown` rather than creating a duplicate. The scan examines at most 1,000 list entries and reads at most 30 candidates with omitted markers. Absence is not treated as proof of failure. Empty threads may be omitted from listings or may not yet be persisted upstream. If the original ID is known, `codex_recover_creation` verifies its unique source marker, cwd and project before binding it; then retry the original create arguments. An unreadable thread cannot be recovered or silently recreated.
 
-Progress is advanced by retry calls; there is no background retry worker. `codex_operation_status` is a saved checkpoint, not a live ownership or completion assertion. Do not delete receipt files: doing so removes replay protection. A verified Companion busy rejection before forwarding records `release_rejected`; retry the same request to recheck the source and try release again. Timeouts, disconnects and ambiguous RPC errors retain the release intent and never automatically repeat unsubscribe.
+Legacy handoff progress is advanced by retry calls. New task execution runs independently in its background worker; retries never submit it again. `codex_operation_status` is a saved checkpoint, not a live ownership or completion assertion. Do not delete receipt files: doing so removes replay protection. A verified Companion busy rejection before forwarding records `release_rejected`; retry the same request to recheck the source and try release again. Timeouts, disconnects and ambiguous RPC errors retain the release intent and never automatically repeat unsubscribe.
 
 Native commands acquire a per-thread kernel lock before reading desktop state and retain it through submission and receipt persistence. Create/handoff progress uses a per-request kernel lock. All plugin instances must share the same state directory. Contention returns `BUSY` / `OPERATION_BUSY`; it does not queue work. macOS releases locks when the owning descriptor closes or the process exits, including a crash. Keep the `.mutex` files in place; their existence does not mean a lock is held. Codex's writer-lock files are never modified.
 
@@ -167,3 +169,11 @@ Interface reference: [Magpie plugin tools, v0.1.2785](https://github.com/yetone/
 ## Automatic Claude review
 
 For Claude Desktop Code opened from the Dock, run `node src/install-desktop.js` once, then continue dispatching through Magpie. Native async hooks bind the current session and wake Claude for review when Codex finishes, without model polling or a custom launcher. See [Desktop setup and recovery](docs/desktop-notifications.md). The optional terminal [Channel launcher](docs/channels.md) remains supported.
+
+## Background lifecycle and limitations
+
+The private background directory contains request fingerprints, worker receipts, transient 0600 input files (removed when read), and terminal output summaries. Request IDs are never replayed after uncertain submission. A disconnected desktop is retried with bounded backoff without restarting work. After a turn completes, the worker persists its terminal summary and remains available for 60 seconds; completion monitoring can recover the exact turn from this private result after the worker exits. Claude's model does not poll.
+
+An unexpected worker crash does not automatically re-run a task: inspect the saved operation and native thread. Unsupported server requests receive an explicit error, never automatic approval. Desktop approval, input, interrupt and next-turn commands use the same worker while it owns the thread; ordinary desktop ownership can resume after it exits. Private IPC versions are checked and remain app-version dependent. Large histories that exceed the 32 MiB frame limit cannot be streamed by this version; work is not replayed to compensate.
+
+`codex_handoff` still explicitly opens existing Companion sessions. The no-navigation guarantee applies to `codex_create_task`. Legacy pending creation IDs are retained and refused for automatic migration rather than duplicated.

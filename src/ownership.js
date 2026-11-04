@@ -43,7 +43,7 @@ export async function desktopState(threadId, { signal, socketPath, timeoutMs = 2
   try {
     const snapshot = await client.connect(threadId);
     const { output, ...state } = summarize(snapshot);
-    return { ...state, owner: 'desktop', desktopClientId: client.owner, cwd: snapshot.state.cwd ?? null };
+    return { ...state, owner: client.executionOwner, desktopClientId: client.owner, cwd: snapshot.state.cwd ?? null };
   } finally { client.close(); }
 }
 export async function inspectOwnership(threadId, options = {}) {

@@ -15,6 +15,7 @@ async function fixture(t, overrides = {}) {
   t.after(() => rm(dir, { recursive: true, force: true }));
   const events = []; const starts = []; const dispatches = []; let created; let attached = false;
   const options = {
+    background: false,
     stateDirectory: dir,
     resolveProject: async () => ({ cwd: dir, projectId: 'project', projectName: 'demo' }),
     server: async (_options, fn) => {

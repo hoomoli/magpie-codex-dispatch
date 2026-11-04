@@ -35,7 +35,7 @@ export default async function MagpieCodexDispatch() {
   return { tool: {
     codex_plugin_info: define('plugin_info', `Report the loaded ${pluginName} v${pluginVersion} and module load time. No desktop connection or task execution. Use this to verify a plugin reload.`, {}, []),
     codex_projects: define('projects', 'List canonical Codex project IDs and workspace roots. Use these IDs rather than desktop UI project IDs.', {}, []),
-    codex_create_task: define('create', 'Create an empty thread in an explicitly selected project or cwd, close the temporary creator, open it in Codex Desktop, and dispatch there. May return pending: repeat identical arguments and requestId. Acceptance is not completion.', {
+    codex_create_task: define('create', 'Create and execute a task in the background in the selected project or cwd. Refresh the ordinary desktop sidebar without navigating or pinning. The desktop follows live progress when viewed. No manual opening is required to start execution. Reuse identical arguments and requestId after an uncertain outcome. Acceptance is not completion.', {
       requestId, prompt, permissionMode,
       title: { type: 'string', maxLength: 160 },
       projectId: { type: 'string', description: 'Canonical ID from codex_projects.' },

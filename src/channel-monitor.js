@@ -1,9 +1,11 @@
+import { terminalBackgroundState } from './background.js';
+import { stateRoot } from './channel-store.js';
 import { Desktop, summarize } from './desktop.js';
 
 // Reconnect only after connection failure, never periodically query a live turn.
 export class CompletionMonitor {
-  constructor({ store, desktopFactory = options => new Desktop(options), socketPath, onEvent = () => {}, onError = () => {}, retryMs = 1000 }) {
-    Object.assign(this, { store, desktopFactory, socketPath, onEvent, onError, retryMs });
+  constructor({ store, desktopFactory = options => new Desktop(options), socketPath, stateDirectory = stateRoot(), onEvent = () => {}, onError = () => {}, retryMs = 1000 }) {
+    Object.assign(this, { store, desktopFactory, socketPath, stateDirectory, onEvent, onError, retryMs });
     this.active = new Map(); this.stopped = false;
   }
   refresh() {
@@ -34,7 +36,17 @@ export class CompletionMonitor {
           }).catch(error => { entry.stopped = false; client.close(); reconnect(error); });
         } });
       entry.client = client;
-      try { await client.connect(task.threadId); } catch (error) { client.close(); reconnect(error); }
+      try { await client.connect(task.threadId); } catch (error) {
+        client.close();
+        const terminal = await terminalBackgroundState(this.stateDirectory, task.threadId, task.turnId);
+        if (terminal && !entry.stopped && !this.stopped) {
+          try {
+            const changed = await this.store.complete(task.key, terminal);
+            entry.stopped = true; clearTimeout(entry.timer); this.active.delete(task.key);
+            if (changed) this.onEvent();
+          } catch (e) { reconnect(e); }
+        } else reconnect(error);
+      }
     };
     void connect();
   }

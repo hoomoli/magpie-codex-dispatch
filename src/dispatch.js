@@ -1,3 +1,4 @@
+import { terminalBackgroundState } from './background.js';
 import { requestedMode, permissionSettings, assertPermissions, nextPermissions } from './permissions.js';
 import { mkdir, lstat, open, readFile, rename, rm } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
@@ -151,6 +152,10 @@ export function createDispatcher({ socketPath, stateDirectory = join(homedir(), 
       await journal.finish(claim, receipt);
       return receipt;
     } catch (error) {
+      if (operation === 'status') {
+        const terminal = await terminalBackgroundState(stateDirectory, args.threadId, args.turnId);
+        if (terminal) return { ...terminal, source: 'durable-background-result' };
+      }
       if (claim?.path && !submitted) await journal.release(claim);
       if (submitted && error.code !== 'OUTCOME_UNKNOWN') throw new DispatchError('OUTCOME_UNKNOWN', 'The command may have been accepted but its receipt was not confirmed. Check status; do not resend with a new requestId.');
       throw error;

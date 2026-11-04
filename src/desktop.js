@@ -55,6 +55,7 @@ export class Desktop {
     const owner = await this.request('thread-owner-discovery', { hostId: 'local', conversationId: threadId });
     if (typeof owner.handledByClientId !== 'string') throw new DispatchError('NO_OWNER', 'Open the target thread in Codex Desktop first.');
     this.owner = owner.handledByClientId;
+    this.executionOwner = owner.result?.executionOwner === 'magpie-codex-background' ? 'background' : 'desktop';
     const snapshot = new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.snapshotWaiter = undefined;

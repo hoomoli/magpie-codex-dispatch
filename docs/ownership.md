@@ -4,7 +4,7 @@
 
 A **writer** owns the Codex runtime session; an MCP caller merely requests work. Do not equate permission to send a message with ownership of the writer lock.
 
-New tasks: resolve an explicit project/workspace → durably record creation intent → create an empty thread → persist its ID → close the temporary creator → verify source release → open the native thread → confirm a native owner snapshot → apply and verify requested permissions → dispatch once. The temporary creator has no turn-execution methods.
+New tasks: resolve the workspace → persist intent → launch a private background worker → create an empty thread → persist its ID → archive/restore that new empty thread once → resume in the worker → verify permissions → dispatch once → publish the genuine restore event. The desktop follows the worker stream without navigation. The metadata-only temporary client still cannot execute turns; only the explicit execution client can.
 
 Old Companion tasks: stop source-side submissions → require the target to be idle → durably record release intent → unsubscribe that thread through its verified source broker → wait for unload → open the native thread → confirm the native owner. A release RPC response is not proof that the writer lock is free. Waiting is reported, not hidden.
 
@@ -20,7 +20,7 @@ Never delete Codex writer-lock files, kill a shared broker, release unrelated se
 
 Permission selection is independent of writer ownership. The caller supplies explicit user-authorized modes; the plugin applies and verifies them after native takeover. Default inheritance never silently promotes a task to Full Access. See the README permission contract.
 
-Persisted phases:
+Legacy handoff/creation phases (new background phases are queued, creating, created, archived, restored, submitting, accepted, failed and outcome_unknown):
 
 | Phase | Meaning / caller action |
 | --- | --- |
@@ -34,14 +34,14 @@ Persisted phases:
 | `desktop_owned` | Handoff confirmed at that point; use live ownership for later checks |
 | `dispatching` / `dispatch_unknown` | Do not submit a new operation to compensate for uncertainty |
 | `waiting_dispatch` | Preflight failed; inspect state, then retry same request |
-| `accepted` | Original turn receipt retained; poll execution status |
+| `accepted` | Original turn receipt retained; wait for the completion event |
 | `project_mismatch` | Stop; inspect project association before any task |
 
 ## 中文
 
 **写入方**持有 Codex 运行时会话；MCP 调用方只是请求执行任务。能发消息不等于需要获取写锁。
 
-新任务流程：明确项目或目录 → 持久化创建意图 → 新建空会话 → 保存 ID → 退出临时创建进程 → 确认源端释放 → 打开原生会话 → 确认桌面所有者快照 → 应用并核验指定权限 → 派发一次。临时创建客户端不具备执行轮次的方法。
+新任务流程：明确目录 → 保存意图 → 启动私有后台进程 → 新建空会话并保存 ID → 仅对此空会话归档并恢复一次 → 后台恢复并核验权限 → 派发一次 → 转发真实恢复事件。桌面跟随后台进度，不打开、不置顶、不跳转。只读元数据客户端仍不允许执行轮次。
 
 旧 Companion 会话：先停止源端继续提交 → 确认目标空闲 → 保存释放意图 → 通过核实过的源 broker 取消订阅这一个会话 → 等待卸载 → 打开原生会话 → 确认桌面接管。释放接口返回成功，不代表写锁已立即释放；等待状态必须明确返回。
 

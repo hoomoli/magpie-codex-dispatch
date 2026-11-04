@@ -1,3 +1,4 @@
+import { createBackground, backgroundDirectory } from './background.js';
 import { requestedMode, permissionSettings } from './permissions.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -41,11 +42,22 @@ export function createFlows(options = {}) {
   const open = options.openThread ?? openThread;
   const dispatch = options.dispatch ?? createDispatcher({ ...options, stateDirectory: directory });
   const inspect = options.inspectOwnership ?? inspectOwnership;
+  const background = options.backgroundCreate ?? createBackground({ stateDirectory: directory, socketPath: options.socketPath, resolve });
   return async function execute(operation, args = {}, { abort } = {}) {
+    if (operation === 'create' && options.background !== false) {
+      validate(operation, args);
+      const legacy = await store.read(args.requestId);
+      if (legacy) {
+        if (legacy.fingerprint !== fingerprint(operation, args)) throw new DispatchError('REQUEST_ID_CONFLICT', 'This ID belongs to different arguments.');
+        if (legacy.accepted) return { ...publicState(legacy), replayed: true };
+        throw new DispatchError('LEGACY_OPERATION_PENDING', 'An older create operation already owns this request ID. Inspect it before migration; no new task was created.');
+      }
+      return background(args, { abort });
+    }
     if (operation === 'projects') return listProjects({ signal: abort, server });
     if (operation === 'ownership') return inspect(args.threadId, { signal: abort, socketPath: options.socketPath });
     if (operation === 'operation_status') {
-      const state = await store.read(args.requestId);
+      const state = await new Operations(backgroundDirectory(directory)).read(args.requestId) ?? await store.read(args.requestId);
       if (!state) throw new DispatchError('OPERATION_NOT_FOUND', 'No create or handoff operation exists for this requestId.');
       return publicState(state);
     }
