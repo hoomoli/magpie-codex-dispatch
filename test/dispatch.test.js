@@ -320,3 +320,21 @@ test('unknown effective permissions and conflicting mode arguments fail before d
   await assert.rejects(f.run('followup', { ...fullCommand, turnId }), { code: 'INVALID_ARGUMENT' });
   assert.equal(mutations(f.calls).length, 0);
 });
+
+test('auto-review is verified before dispatch and pinned to the turn without full access', async t => {
+  const reviewed = { approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandboxPolicy: { type: 'workspaceWrite', networkAccess: false } };
+  const f = await fixture(t, { snapshot: updated => ({ ...state(), ...(updated ? { latestThreadSettings: reviewed } : {}) }) });
+  const result = await f.run('dispatch', { ...command, permissionMode: 'auto-review' });
+  assert.equal(result.permissions.mode, 'auto-review');
+  assert.equal(result.permissions.sandbox, 'workspace-write');
+  const [update, start] = mutations(f.calls);
+  assert.deepEqual(update.params.threadSettings, { permissions: ':workspace', approvalPolicy: 'on-request', approvalsReviewer: 'auto_review' });
+  assert.equal(start.params.turnStart.request.approvalsReviewer, 'auto_review');
+  assert.equal(start.params.turnStart.request.permissions, ':workspace');
+});
+
+test('auto-review refuses a backend that retains human approval', async t => {
+  const f = await fixture(t);
+  await assert.rejects(f.run('dispatch', { ...command, permissionMode: 'auto-review' }), { code: 'PERMISSION_MISMATCH' });
+  assert.equal(f.calls.some(c => c.method === 'thread-follower-start-turn'), false);
+});

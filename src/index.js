@@ -7,7 +7,7 @@ import { pluginName, pluginVersion, loadedAt } from './version.js';
 const threadId = { type: 'string', description: 'UUID of an existing, open local Codex desktop thread.' };
 const turnId = { type: 'string', description: 'Turn ID returned by dispatch or status.' };
 const requestId = { type: 'string', minLength: 8, maxLength: 128, description: 'Unique command ID. Reuse the same ID and arguments on retries; never automatically retry an unknown outcome with a new ID.' };
-const permissionMode = { type: 'string', enum: permissionModes, description: 'Default inherit: preserve the desktop thread selection. Use full-access only when the user explicitly authorized unrestricted filesystem/network access without shell approval prompts. Explicit modes are applied to the idle native thread and verified before dispatch.' };
+const permissionMode = { type: 'string', enum: permissionModes, description: 'Default inherit: preserve existing thread settings or backend defaults for new background threads; does not copy another desktop chat. Use auto-review for a workspace-write sandbox with on-request approvals routed to Codex auto_review; the reviewer may approve or deny eligible requests. Use full-access only when the user explicitly authorized unrestricted filesystem/network access without shell approval prompts. Explicit modes are applied to the idle native thread and verified before dispatch.' };
 const prompt = { type: 'string', minLength: 1, description: 'User-authorized task or follow-up instruction; at most 64 KiB UTF-8.' };
 
 export default async function MagpieCodexDispatch() {

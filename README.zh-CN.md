@@ -92,9 +92,10 @@ Magpie 会把此插件的 HTTP MCP 配置写入 Claude。新开 Claude 会话加
 
 | 模式 | 行为 |
 | --- | --- |
-| `inherit`（默认） | 保留原生会话当前选定的权限；已选择完全访问时继续继承 |
+| `inherit`（默认） | 已有会话保留当前设置；新建后台任务沿用后端默认值，不复制其他桌面会话的权限 |
 | `read-only` | 只读沙箱，`on-request` 审批 |
 | `ask-for-approval` | 工作区可写沙箱，`on-request` 审批 |
+| `auto-review` | 工作区可写沙箱，`on-request` 审批由 Codex `auto_review` 审核；符合条件的请求可能获批或被拒绝 |
 | `full-access` | 文件系统和网络完全访问，`never` shell 审批；必须有用户明确授权 |
 
 用户要求特定权限的新任务，Claude 应明确传递对应模式。其他会话的权限选择不代表授权所有新任务完全访问。旧参数 `sandbox: read-only/workspace-write` 映射到对应明确模式；与 `permissionMode` 冲突时拒绝。0.2.0 默认强制工作区可写并按需审批；0.2.1 改为继承。

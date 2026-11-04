@@ -95,9 +95,10 @@ Optional `title` is limited to 160 characters and defaults to `Magpie task`. The
 
 | Mode | Behavior |
 | --- | --- |
-| `inherit` (default) | Preserve the native thread's selected settings, including Full Access when already selected |
+| `inherit` (default) | Preserve existing thread settings; new background tasks use backend defaults, not another desktop chat's selection |
 | `read-only` | Read-only sandbox with `on-request` approvals |
 | `ask-for-approval` | Workspace-write sandbox with `on-request` approvals |
+| `auto-review` | Workspace-write sandbox, `on-request` approvals routed to Codex `auto_review`; eligible requests may be approved or denied |
 | `full-access` | Unrestricted filesystem/network access with `never` shell approvals; requires explicit user authorization |
 
 The caller must pass the user's requested mode explicitly when creating a task with a particular permission level. A selection in a different thread is not authorization for every new task. Legacy `sandbox: read-only/workspace-write` maps to the corresponding explicit mode; conflicting fields are rejected. Version 0.2.0 forced workspace-write/on-request by default; 0.2.1 inherits instead.
