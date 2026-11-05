@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createLifecycle } from '../src/lifecycle.js';
+import { rpcRejection } from '../src/rpc.js';
 import { createFlows } from '../src/flows.js';
 const threadId = '01900000-0000-7000-8000-000000000001';
 const childId = '01900000-0000-7000-8000-000000000002';
@@ -13,13 +14,14 @@ async function fixture(t, options = {}) {
   const calls = [];
   const server = async (config, fn) => fn({ request: async (method, params) => {
     calls.push([method, params]);
+    if (options.rejectRead && method === 'thread/read') throw rpcRejection(method, params, { code: -32600, message: `thread not loaded: ${params.threadId}` });
     if (method === 'thread/read') return { thread: { id: threadId, ephemeral: false } };
     if (method === 'thread/list') return { data: params.archived ? [] : [{ id: childId }], nextCursor: null };
     if (options.lost) throw new Error('lost reply');
     config.onNotification({ method: method === 'thread/archive' ? 'thread/archived' : 'thread/deleted', params: { threadId } });
     return {};
   } });
-  return { calls, stateDirectory, run: createLifecycle({ stateDirectory, server, writers: options.writers ?? (async () => []) }) };
+  return { calls, stateDirectory, run: createLifecycle({ stateDirectory, server, writers: options.writers ?? (async () => []), inspect: options.inspect ?? (async () => { throw Error('unknown owner'); }) }) };
 }
 for (const operation of ['archive', 'delete']) {
   test(`${operation}: sends once, persists receipt, exposes operation status and rejects conflicting IDs`, async t => {
@@ -36,10 +38,14 @@ for (const operation of ['archive', 'delete']) {
     assert.equal(status.fingerprint, undefined);
     await assert.rejects(f.run(operation, { ...args, threadId: childId }), { code: 'REQUEST_ID_CONFLICT' });
   });
-  test(`${operation}: refuses a writer on root or descendant`, async t => {
+  test(`${operation}: waits for an unconfirmed writer on root or descendant`, async t => {
     for (const held of [threadId, childId]) {
       const f = await fixture(t, { writers: async id => id === held ? [123] : [] });
-      await assert.rejects(f.run(operation, { threadId, requestId: 'busy-test-0001' }), { code: 'THREAD_IN_USE' });
+      const result = await f.run(operation, { threadId, requestId: 'busy-test-0001' });
+      assert.equal(result.phase, 'waiting_writer_release');
+      assert.equal(result.completed, false);
+      assert.equal(result.submitted, false);
+      assert.equal(result.heldThreads[0].reason, 'OWNERSHIP_UNCONFIRMED');
       assert.equal(f.calls.some(([m]) => m === `thread/${operation}`), false);
     }
   });
@@ -57,4 +63,51 @@ test('lifecycle validation happens before contacting Codex', async t => {
   const f = await fixture(t);
   await assert.rejects(f.run('delete', { threadId: '../../bad', requestId: 'valid-id-0001' }), { code: 'INVALID_ARGUMENT' });
   assert.equal(f.calls.length, 0);
+});
+for (const operation of ['archive', 'delete']) {
+  test(`${operation}: idle desktop owner waits without sending; the same ID progresses after unload`, async t => {
+    let held = true;
+    const f = await fixture(t, { writers: async id => held && id === threadId ? [123] : [],
+      inspect: async () => ({ owner: 'desktop', runtimeStatus: 'idle', status: 'completed', turnFound: true, pendingRequests: 0 }) });
+    const args = { threadId, requestId: 'idle-desktop-0001' };
+    const waiting = await f.run(operation, args);
+    assert.equal(waiting.heldThreads[0].reason, 'IDLE_OWNER_MUST_UNLOAD');
+    assert.equal(waiting.phase, 'waiting_writer_release');
+    assert.equal(waiting.completed, false);
+    assert.equal(f.calls.some(([m]) => m === `thread/${operation}`), false);
+    const status = await createFlows({ stateDirectory: f.stateDirectory })('operation_status', { requestId: args.requestId });
+    assert.equal(status.phase, 'waiting_writer_release');
+    held = false;
+    assert.equal((await f.run(operation, args)).completed, true);
+    assert.equal(f.calls.filter(([m]) => m === `thread/${operation}`).length, 1);
+  });
+  test(`${operation}: refuses active roots, active descendants and pending approvals even when last turn completed`, async t => {
+    for (const [held, snapshot] of [
+      [threadId, { runtimeStatus: 'active', status: 'completed', pendingRequests: 0 }],
+      [childId, { runtimeStatus: 'idle', status: 'inProgress', pendingRequests: 0 }],
+      [threadId, { runtimeStatus: 'idle', status: 'completed', pendingRequests: 1 }],
+    ]) {
+      const f = await fixture(t, { writers: async id => id === held ? [123] : [], inspect: async () => ({ owner: 'desktop', ...snapshot }) });
+      const args = { threadId, requestId: 'active-test-0001' };
+      await assert.rejects(f.run(operation, args), { code: 'THREAD_ACTIVE' });
+      assert.equal(f.calls.some(([m]) => m === `thread/${operation}`), false);
+      const status = await createFlows({ stateDirectory: f.stateDirectory })('operation_status', { requestId: args.requestId });
+      assert.equal(status.phase, 'preflight_failed');
+      assert.equal(status.blockingThreadId, held);
+      assert.equal(status.submitted, false);
+    }
+  });
+}
+test('unreadable target retains a stage-specific receipt, never claims deletion or sends a mutation', async t => {
+  const f = await fixture(t, { rejectRead: true });
+  const args = { threadId, requestId: 'unavailable-test-0001' };
+  for (let i = 0; i < 2; i++) await assert.rejects(f.run('delete', args), { code: 'THREAD_UNAVAILABLE' });
+  const status = await createFlows({ stateDirectory: f.stateDirectory })('operation_status', { requestId: args.requestId });
+  assert.equal(status.stage, 'read_target');
+  assert.equal(status.rpcMethod, 'thread/read');
+  assert.equal(status.rpcCode, -32600);
+  assert.equal(status.errorCode, 'THREAD_UNAVAILABLE');
+  assert.equal(status.completed, false);
+  assert.equal(status.submitted, false);
+  assert.equal(f.calls.some(([m]) => m === 'thread/delete'), false);
 });

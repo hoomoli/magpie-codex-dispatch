@@ -2,7 +2,7 @@
 
 [中文说明](README.zh-CN.md) · [Ownership contract / 控制权规范](docs/ownership.md)
 
-Current version: **0.0.6** — background creation without navigation, desktop follower streaming, and event-driven Claude review.
+Current version: **0.0.7** — background creation without navigation, desktop follower streaming, and event-driven Claude review.
 
 The display name is `magpie-codex-dispatch`; the version belongs in Magpie’s separate version badge. Local-directory installs hide that badge, so use `codex_plugin_info` to verify their loaded version. Git-based installs also show a commit identifier managed by Magpie.
 
@@ -77,7 +77,9 @@ Plugin-specific MCP exposes these names. The combined endpoint prefixes them wit
 
 `codex_archive({threadId, requestId})` archives a persisted thread and attempts to archive its spawned descendants. `codex_delete({threadId, requestId})` permanently deletes the persisted active/archived thread and its spawned descendants; use only for an explicitly user-requested deletion of that scope.
 
-Both enumerate active and archived descendants and refuse any discovered writer (`THREAD_IN_USE`). Wait for unload; these tools never interrupt work, hand off ownership, or remove writer locks. Plugin mutexes cannot prevent another client from resuming between the ownership check and mutation; avoid concurrent desktop/client operations.
+Both enumerate active and archived descendants. A fresh owner snapshot showing active work or pending input/approval fails with `THREAD_ACTIVE`. Held idle or unconfirmed owners return `completed: false`, `phase: waiting_writer_release`, and `heldThreads` reasons (`IDLE_OWNER_MUST_UNLOAD` or `OWNERSHIP_UNCONFIRMED`). Wait for normal owner unload and retry the same request ID; no operation runs automatically while waiting. Desktop-loaded idle threads still cannot be mutated immediately: follower IPC exposes no archive/delete command, and a second AppServer rejects another writer's thread. These tools never interrupt work, force handoff, or remove writer locks. Plugin mutexes cannot prevent another client from resuming between the ownership check and mutation; avoid concurrent desktop/client operations.
+
+Lifecycle preflight failures now have durable `codex_operation_status` receipts with `stage`, `errorCode`, and available `rpcMethod` / `rpcCode`. A `thread/read` rejection saying the thread is not loaded becomes `THREAD_UNAVAILABLE`; it is not proof of deletion. Failed preflight and waiting requests can be retried with the same ID, while submitted unknown outcomes are never resent.
 
 Reuse the same request ID and arguments. Server acknowledgment is persisted; observed `affectedThreadIds` notifications may be incomplete and archive is best-effort for descendants. Lost replies retain `outcome_unknown` and are never automatically resent, including after restart. Inspect `codex_operation_status` and actual Codex state before taking further action. No direct-file deletion fallback is used. See [verification](docs/verification.md) for the isolated real-server check.
 

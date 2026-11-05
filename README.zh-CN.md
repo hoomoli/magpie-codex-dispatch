@@ -1,6 +1,6 @@
 # magpie-codex-dispatch
 
-当前版本：**0.0.6**。新任务后台执行、普通侧栏刷新、不置顶不跳转，完成后通过已有事件钩子唤醒 Claude。
+当前版本：**0.0.7**。新任务后台执行、普通侧栏刷新、不置顶不跳转，完成后通过已有事件钩子唤醒 Claude。
 
 显示名称固定为 `magpie-codex-dispatch`，版本使用 Magpie 独立的版本徽标。本地目录安装不显示该徽标，可用 `codex_plugin_info` 核实运行版本；Git 安装还会显示由 Magpie 管理的提交标识。
 
@@ -68,15 +68,17 @@ Magpie 会把此插件的 HTTP MCP 配置写入 Claude。新开 Claude 会话加
 | `codex_status` | `threadId`，可选 `turnId` | 获取实时状态及最多 16,000 字符的助手输出 |
 | `codex_dispatch` | `threadId`、`prompt`、`requestId` | 在空闲原生会话开始下一轮 |
 | `codex_followup` | 再加 `turnId` | 向进行中的轮次补充指令 |
-| `codex_archive` | `threadId`、`requestId` | 归档目标并尝试归档派生子会话；拒绝仍有写入方的目标 |
-| `codex_delete` | `threadId`、`requestId` | 永久删除目标及派生子会话；需用户明确要求，拒绝仍有写入方的目标 |
+| `codex_archive` | `threadId`、`requestId` | 归档目标并尝试归档派生子会话；区分运行中和等待所有者卸载 |
+| `codex_delete` | `threadId`、`requestId` | 永久删除目标及派生子会话；需用户明确要求，持锁时等待卸载 |
 | `codex_stop` | `threadId`、`turnId`、`requestId` | 请求中断指定的进行中轮次 |
 
 ### 归档与永久删除
 
 - `codex_archive`：传入 `threadId`、唯一 `requestId`，通过 AppServer `thread/archive` 归档目标，并尝试归档派生子会话。
 - `codex_delete`：参数相同，通过 `thread/delete` 永久删除目标及派生子会话。仅在用户明确要求删除该范围时调用；不可恢复，不是仅从侧栏隐藏。
-- 两者都要求持久化会话。执行前分页枚举活动及已归档的派生子会话，检查目标和已发现子会话的写入方；任何会话仍被加载持有时返回 `THREAD_IN_USE`，先等待卸载。不会自动中断、交接或删除写锁。
+- 两者都要求持久化会话。执行前分页枚举活动及已归档的派生子会话，检查目标和已发现子会话的写入方。若实时快照显示运行中或待输入/审批，返回 `THREAD_ACTIVE`；若空闲但仍持锁，返回 `completed: false`、`phase: waiting_writer_release`，其中 `heldThreads` 区分 `IDLE_OWNER_MUST_UNLOAD` 与无法核实所有权的 `OWNERSHIP_UNCONFIRMED`。
+- 等待状态不是已接受删除，也不是完成。插件不在后台自动重试；先由所有者正常卸载，再按相同参数和 `requestId` 重试。已加载的桌面空闲会话目前仍不能立即归档/删除：桌面跟随协议没有生命周期命令，独立 AppServer 会拒绝其他写入方持有的目标。不要仅依据“空闲”跳过此限制，不删除锁、不杀共享进程。
+- `codex_operation_status` 现在也记录生命周期预检失败，包含 `stage`、`errorCode` 以及可用的 `rpcMethod`、`rpcCode`。读取时的 `thread not loaded` 归类为 `THREAD_UNAVAILABLE`，表示当前无法读取持久化会话，不是删除成功或历史从未存在的证据。该请求未发送删除命令，可在核实目标后使用相同请求 ID 重试。
 - 同一逻辑操作重试保持相同参数和 `requestId`。`completed: true` / `serverAcknowledged: true` 表示 Codex 服务端已确认；`affectedThreadIds` 仅是该连接已观察到的通知，可能不完整，归档不保证所有子会话成功。回执是历史结果，不代表之后没有被其他客户端恢复。
 - 超时或丢回执保留 `outcome_unknown`，同 ID 重试不会再次发送；用 `codex_operation_status` 查看回执，再核对 Codex 实际状态，不能换 ID 自动重发。
 - 插件锁只协调插件调用；检查写入方与服务端变更之间不是跨客户端原子事务，操作时应避免桌面或其他客户端同时恢复/派发。服务端不支持时不降级为删除本地文件。

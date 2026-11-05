@@ -4,6 +4,12 @@
 
 Verification history on **2026-11-03**, through local version **0.2.2**. Original 0.2.1 acceptance is retained below. No credentials, private conversations, machine paths or raw runtime logs are published here.
 
+## Version 0.0.7 lifecycle diagnostics (2026-11-05)
+
+- An isolated test with two real bundled Codex 0.166.0 AppServers confirms that an idle writer still prevents a second server from archiving/deleting its thread (`-32600`, active-writer rejection). Desktop follower IPC inspected in the installed version exposes no lifecycle mutation command. Immediate mutation of a desktop-loaded idle thread is **not implemented**.
+- `node scripts/verify-lifecycle.mjs` passes in a temporary isolated `CODEX_HOME`: actual writer detection returns a waiting receipt; after the owning server exits, the same request ID archives the thread; deletion succeeds; active/archived listings exclude it; a subsequent read classifies as `THREAD_UNAVAILABLE`. Only the owner snapshot transport is substituted in this test. No model turn or existing user conversation is used, and this is not a real desktop sidebar refresh acceptance.
+- Regression coverage distinguishes idle/unconfirmed writers, active roots/descendants, pending approvals, durable preflight failure diagnostics, progression after unload, and safe RPC method/code classification without raw error payloads. Submitted unknown outcomes retain their no-resend behavior.
+
 ## Version 0.0.6 lifecycle tools (2026-11-05, local)
 
 - The bundled Codex 0.166.0 experimental JSON schema includes `thread/archive` and `thread/delete`. The [official AppServer documentation](https://learn.chatgpt.com/docs/app-server) confirms descendant cascading and permanent deletion semantics.

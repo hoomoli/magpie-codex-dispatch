@@ -86,3 +86,29 @@ test('lifecycle clients allow only archive/delete mutations, never Companion or 
     }
   }
 });
+test('RPC errors retain safe method/code diagnostics without leaking raw payloads', async t => {
+  const id = '01900000-0000-7000-8000-000000000001';
+  const failures = [
+    [{ code: -32600, message: `thread not loaded: ${id}` }, 'THREAD_UNAVAILABLE'],
+    [{ code: -32600, message: `thread ${id} already has an active writer` }, 'THREAD_IN_USE'],
+    [{ code: -32601, message: 'private raw unsupported payload' }, 'UNSUPPORTED_METHOD'],
+    [{ code: -32600, message: 'private prompt /private/path' }, 'RPC_REJECTED'],
+  ];
+  let failure;
+  const endpoint = await broker(t, (socket, m) => {
+    if (m.method === 'initialize') reply(socket, m.id, { userAgent: 'codex-companion-broker' });
+    else socket.write(JSON.stringify({ id: m.id, error: failure }) + '\n');
+  });
+  const client = new AppServer(); t.after(() => client.close());
+  await client.connectCompanion(endpoint);
+  for (const [value, code] of failures) {
+    failure = value;
+    await assert.rejects(client.request('thread/read', { threadId: id }), error => {
+      assert.equal(error.code, code);
+      assert.equal(error.rpcMethod, 'thread/read');
+      assert.equal(error.rpcCode, value.code);
+      assert.ok(!error.message.includes('private'));
+      return true;
+    });
+  }
+});

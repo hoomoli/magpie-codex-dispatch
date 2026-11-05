@@ -15,7 +15,7 @@ export default async function MagpieCodexDispatch() {
   const run = createDispatcher({ socketPath: process.env.MAGPIE_CODEX_SOCKET,
     stateDirectory: process.env.MAGPIE_CODEX_STATE_DIR });
   const flows = createFlows({ socketPath: process.env.MAGPIE_CODEX_SOCKET, stateDirectory: process.env.MAGPIE_CODEX_STATE_DIR });
-  const lifecycle = createLifecycle({ stateDirectory: process.env.MAGPIE_CODEX_STATE_DIR });
+  const lifecycle = createLifecycle({ stateDirectory: process.env.MAGPIE_CODEX_STATE_DIR, socketPath: process.env.MAGPIE_CODEX_SOCKET });
   const define = (operation, description, properties, required) => ({
     description,
     args: { type: 'object', properties, required, additionalProperties: false },
@@ -35,8 +35,8 @@ export default async function MagpieCodexDispatch() {
     },
   });
   return { tool: {
-    codex_archive: define('archive', 'Archive a user-selected persisted thread and attempt to archive its spawned descendants. Refuses any target/descendant with a writer; wait for unload. Does not stop tasks or release owners. Reuse requestId on retries. Returns server acknowledgment; affectedThreadIds are observed notifications, not proof all descendants archived.', { threadId, requestId }, ['threadId', 'requestId']),
-    codex_delete: define('delete', 'Permanently delete a persisted active or archived thread AND its spawned descendants through Codex. Use only when the user explicitly requested deletion of this scope. Refuses any target/descendant with a writer; never stops tasks. Reuse requestId on retries; unknown outcomes must be inspected, never resent with a new ID.', { threadId, requestId }, ['threadId', 'requestId']),
+    codex_archive: define('archive', 'Archive a persisted thread and attempt to archive spawned descendants. Active/awaiting-input threads fail with THREAD_ACTIVE. Idle or unconfirmed owners return completed:false, phase:waiting_writer_release; the owner must unload, then retry the SAME requestId. No automatic execution, interruption or forced release. Only completed:true means server acknowledgment; affectedThreadIds may be incomplete.', { threadId, requestId }, ['threadId', 'requestId']),
+    codex_delete: define('delete', 'Permanently delete a persisted active/archived thread AND spawned descendants only when explicitly requested by the user. Active/awaiting-input threads fail with THREAD_ACTIVE; held idle/unknown threads return completed:false, phase:waiting_writer_release, never success. Wait for owner unload and retry the SAME requestId. Does not interrupt or force release. THREAD_UNAVAILABLE is not proof of deletion. Inspect unknown outcomes; never resend with a new ID.', { threadId, requestId }, ['threadId', 'requestId']),
     codex_plugin_info: define('plugin_info', `Report the loaded ${pluginName} v${pluginVersion} and module load time. No desktop connection or task execution. Use this to verify a plugin reload.`, {}, []),
     codex_projects: define('projects', 'List canonical Codex project IDs and workspace roots. Use these IDs rather than desktop UI project IDs.', {}, []),
     codex_create_task: define('create', 'Create and execute a task in the background in the selected project or cwd. Refresh the ordinary desktop sidebar without navigating or pinning. The desktop follows live progress when viewed. No manual opening is required to start execution. Reuse identical arguments and requestId after an uncertain outcome. Acceptance is not completion.', {

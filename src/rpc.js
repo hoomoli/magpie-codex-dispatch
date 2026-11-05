@@ -10,6 +10,27 @@ const MAX_BYTES = 32 * 1024 * 1024;
 const ALLOWED = new Set(['initialize', 'project/list', 'project/read', 'thread/start', 'thread/read',
   'thread/list', 'thread/name/set', 'thread/unsubscribe', 'thread/loaded/list']);
 
+// Classify known server errors without forwarding payloads, paths or prompts.
+export function rpcRejection(method, params, failure, companion = false) {
+  const notSubmitted = companion && failure.code === -32001 && failure.message === 'Shared Codex broker is busy.';
+  let code = notSubmitted ? 'SOURCE_BUSY' : 'RPC_REJECTED';
+  let message = notSubmitted ? 'The source broker is busy; no takeover was attempted.' : 'The app-server rejected the request.';
+  if (!notSubmitted && failure.code === -32601) {
+    code = 'UNSUPPORTED_METHOD'; message = 'This Codex version does not support the requested method.';
+  } else if (!notSubmitted && failure.code === -32600 && typeof params?.threadId === 'string') {
+    if (failure.message === `thread not loaded: ${params.threadId}`) {
+      code = 'THREAD_UNAVAILABLE'; message = 'Codex cannot read this thread. It may be unpersisted or no longer available; this is not proof of deletion.';
+    } else if (failure.message === `thread ${params.threadId} already has an active writer`) {
+      code = 'THREAD_IN_USE'; message = 'Codex requires the existing writer to unload before this operation.';
+    }
+  }
+  const error = new DispatchError(code, `${message} Method: ${method}; RPC code: ${Number.isInteger(failure.code) ? failure.code : 'unknown'}.`);
+  error.rpcMethod = method;
+  if (Number.isInteger(failure.code)) error.rpcCode = failure.code;
+  if (notSubmitted) error.delivery = 'not-submitted';
+  return error;
+}
+
 export async function resolveBinary(explicit = process.env.MAGPIE_CODEX_BINARY) {
   const paths = explicit ? [explicit] : [
     '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex',
@@ -51,11 +72,7 @@ export class AppServer {
           if (message.error) {
             // Companion 1.0.6 rejects this exact error before forwarding the RPC.
             // A generic error containing "busy" is not proof of non-delivery.
-            const notSubmitted = this.companion && message.error.code === -32001 && message.error.message === 'Shared Codex broker is busy.';
-            const error = new DispatchError(notSubmitted ? 'SOURCE_BUSY' : 'RPC_REJECTED',
-              notSubmitted ? 'The source broker is busy; no takeover was attempted.' : 'The app-server rejected the request. Check version compatibility and the target thread.');
-            if (notSubmitted) error.delivery = 'not-submitted';
-            waiter.reject(error);
+            waiter.reject(rpcRejection(waiter.method, waiter.params, message.error, this.companion));
           } else waiter.resolve(message.result);
         }
       } catch { this.fail(new DispatchError('INVALID_RPC_RESPONSE', 'Invalid or oversized app-server response.')); }
@@ -102,7 +119,7 @@ export class AppServer {
     return new Promise((resolve, reject) => {
       const id = ++this.next;
       const timer = setTimeout(() => { this.pending.delete(id); reject(new DispatchError('RPC_TIMEOUT', 'App-server request timed out.')); }, this.timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { resolve, reject, timer, method, params });
       try { this.input.write(JSON.stringify({ id, method, params }) + '\n'); }
       catch { clearTimeout(timer); this.pending.delete(id); reject(new DispatchError('RPC_CLOSED', 'App-server input is unavailable.')); }
     });
