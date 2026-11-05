@@ -58,7 +58,8 @@ export function createFlows(options = {}) {
     if (operation === 'ownership') return inspect(args.threadId, { signal: abort, socketPath: options.socketPath });
     if (operation === 'operation_status') {
       const state = await new Operations(backgroundDirectory(directory)).read(args.requestId) ?? await store.read(args.requestId);
-      if (!state) throw new DispatchError('OPERATION_NOT_FOUND', 'No create or handoff operation exists for this requestId.');
+      if (!state) throw new DispatchError('OPERATION_NOT_FOUND', 'No operation exists for this requestId.');
+      if (['archive', 'delete'].includes(state.operation)) { const { fingerprint: _, ...result } = state; return result; }
       return publicState(state);
     }
     if (operation === 'recover_creation') {

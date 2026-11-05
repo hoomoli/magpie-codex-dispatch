@@ -4,6 +4,12 @@
 
 Verification history on **2026-11-03**, through local version **0.2.2**. Original 0.2.1 acceptance is retained below. No credentials, private conversations, machine paths or raw runtime logs are published here.
 
+## Version 0.0.6 lifecycle tools (2026-11-05, local)
+
+- The bundled Codex 0.166.0 experimental JSON schema includes `thread/archive` and `thread/delete`. The [official AppServer documentation](https://learn.chatgpt.com/docs/app-server) confirms descendant cascading and permanent deletion semantics.
+- In a temporary isolated `CODEX_HOME`, created and named a persisted empty thread without starting a model turn, then invoked the actual plugin lifecycle executor to archive it and delete the archived thread. Both real AppServer calls acknowledged success. The thread was absent from both active and archived listings afterward. No user thread was modified.
+- Unit coverage includes persisted receipts, replay after restart, request conflicts, writer refusal on root/descendants, and lost-reply suppression. Desktop sidebar refresh, installed Magpie reload, and real Claude invocation remain unverified for these new tools.
+
 ## Version 0.2.2 (local, unpublished) / 0.2.2（本地，未发布）
 
 Verified locally on **2026-11-03**, after the 0.2.1 permission changes. Syntax checks and **52/52 tests** pass under Node and Magpie Bun 1.4.4, including the version-reporting regression. After reload, installed `codex_plugin_info` returned `pluginVersion: "0.2.2"` with a module load timestamp; an existing operation-status result also carried `pluginVersion: "0.2.2"`. The package has not been released.

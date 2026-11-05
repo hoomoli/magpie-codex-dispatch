@@ -217,11 +217,11 @@ test('unknown history is not success and assistant output is bounded', () => {
 
 test('plugin exposes serializable tool definitions and validates mutation input', async () => {
   const { tool } = await plugin();
-  assert.equal(Object.keys(tool).length, 12);
+  assert.equal(Object.keys(tool).length, 14);
   for (const definition of Object.values(tool)) {
     assert.equal(JSON.parse(JSON.stringify(definition.args)).type, 'object');
   }
-  for (const name of ['codex_dispatch', 'codex_followup', 'codex_stop', 'codex_create_task', 'codex_handoff']) {
+  for (const name of ['codex_dispatch', 'codex_followup', 'codex_stop', 'codex_create_task', 'codex_handoff', 'codex_archive', 'codex_delete']) {
     await assert.rejects(tool[name].execute({ threadId: 'invalid' }), /INVALID_ARGUMENT/);
   }
 });

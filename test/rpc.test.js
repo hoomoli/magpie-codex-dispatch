@@ -70,3 +70,19 @@ test('source endpoints and executable paths must be explicit local resources', a
   await assert.rejects(client.connectCompanion(`unix:${file}`), { code: 'INVALID_SOURCE' });
   await assert.rejects(resolveBinary('codex'), { code: 'INVALID_BINARY' });
 });
+test('lifecycle clients allow only archive/delete mutations, never Companion or turn execution', async t => {
+  const endpoint = await broker(t, (socket, m) => reply(socket, m.id, { userAgent: 'codex-companion-broker' }));
+  const companion = new AppServer({ lifecycle: true }); t.after(() => companion.close());
+  await companion.connectCompanion(endpoint);
+  for (const method of ['thread/archive', 'thread/delete']) {
+    await assert.rejects(companion.request(method), { code: 'UNSUPPORTED_METHOD' });
+    const plain = new AppServer();
+    await assert.rejects(plain.request(method), { code: 'UNSUPPORTED_METHOD' });
+    const lifecycle = new AppServer({ lifecycle: true });
+    lifecycle.input = { write(line) { const { id } = JSON.parse(line); const pending = lifecycle.pending.get(id); clearTimeout(pending.timer); lifecycle.pending.delete(id); pending.resolve({}); } };
+    assert.deepEqual(await lifecycle.request(method, { threadId: 'example' }), {});
+    for (const denied of ['turn/start', 'thread/resume', 'thread/unarchive', 'command/exec']) {
+      await assert.rejects(lifecycle.request(denied), { code: 'UNSUPPORTED_METHOD' });
+    }
+  }
+});

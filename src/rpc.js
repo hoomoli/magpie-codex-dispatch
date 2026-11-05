@@ -23,8 +23,8 @@ export async function resolveBinary(explicit = process.env.MAGPIE_CODEX_BINARY) 
 }
 
 export class AppServer {
-  constructor({ signal, timeoutMs = 8000, execution = false, onNotification, onRequest, onFailure } = {}) {
-    Object.assign(this, { execution, onNotification, onRequest, onFailure });
+  constructor({ signal, timeoutMs = 8000, execution = false, lifecycle = false, onNotification, onRequest, onFailure } = {}) {
+    Object.assign(this, { execution, lifecycle, onNotification, onRequest, onFailure });
     this.signal = signal; this.timeoutMs = timeoutMs; this.pending = new Map(); this.buffer = ''; this.next = 0;
     this.onAbort = () => this.fail(new DispatchError('ABORTED', 'The caller cancelled the operation.'));
   }
@@ -96,7 +96,8 @@ export class AppServer {
     return result;
   }
   request(method, params = {}) {
-    if (!ALLOWED.has(method) && !(this.execution && !this.companion && new Set(['thread/archive', 'thread/unarchive', 'thread/resume', 'thread/settings/update', 'turn/start', 'turn/steer', 'turn/interrupt']).has(method))) return Promise.reject(new DispatchError('UNSUPPORTED_METHOD', 'This temporary client cannot execute turns or arbitrary commands.'));
+    const lifecycleAllowed = this.lifecycle && !this.companion && ['thread/archive', 'thread/delete'].includes(method);
+    if (!ALLOWED.has(method) && !lifecycleAllowed && !(this.execution && !this.companion && new Set(['thread/archive', 'thread/unarchive', 'thread/resume', 'thread/settings/update', 'turn/start', 'turn/steer', 'turn/interrupt']).has(method))) return Promise.reject(new DispatchError('UNSUPPORTED_METHOD', 'This temporary client cannot execute turns or arbitrary commands.'));
     if (this.failure) return Promise.reject(this.failure);
     return new Promise((resolve, reject) => {
       const id = ++this.next;

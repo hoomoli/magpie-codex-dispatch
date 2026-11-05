@@ -2,7 +2,7 @@
 
 [中文说明](README.zh-CN.md) · [Ownership contract / 控制权规范](docs/ownership.md)
 
-Current version: **0.0.4** — background creation without navigation, desktop follower streaming, and event-driven Claude review.
+Current version: **0.0.6** — background creation without navigation, desktop follower streaming, and event-driven Claude review.
 
 The display name is `magpie-codex-dispatch`; the version belongs in Magpie’s separate version badge. Local-directory installs hide that badge, so use `codex_plugin_info` to verify their loaded version. Git-based installs also show a commit identifier managed by Magpie.
 
@@ -72,6 +72,14 @@ Plugin-specific MCP exposes these names. The combined endpoint prefixes them wit
 | `codex_dispatch` | `threadId`, `prompt`, `requestId`, optional `permissionMode` | Start the next turn in an idle native thread |
 | `codex_followup` | `threadId`, `turnId`, `prompt`, `requestId` | Steer an active turn |
 | `codex_stop` | `threadId`, `turnId`, `requestId` | Request cancellation of the specified active turn |
+
+### Archive and delete
+
+`codex_archive({threadId, requestId})` archives a persisted thread and attempts to archive its spawned descendants. `codex_delete({threadId, requestId})` permanently deletes the persisted active/archived thread and its spawned descendants; use only for an explicitly user-requested deletion of that scope.
+
+Both enumerate active and archived descendants and refuse any discovered writer (`THREAD_IN_USE`). Wait for unload; these tools never interrupt work, hand off ownership, or remove writer locks. Plugin mutexes cannot prevent another client from resuming between the ownership check and mutation; avoid concurrent desktop/client operations.
+
+Reuse the same request ID and arguments. Server acknowledgment is persisted; observed `affectedThreadIds` notifications may be incomplete and archive is best-effort for descendants. Lost replies retain `outcome_unknown` and are never automatically resent, including after restart. Inspect `codex_operation_status` and actual Codex state before taking further action. No direct-file deletion fallback is used. See [verification](docs/verification.md) for the isolated real-server check.
 
 ### Create in a project
 
