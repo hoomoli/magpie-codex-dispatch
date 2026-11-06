@@ -79,6 +79,38 @@ test('delayed source unload resumes handoff without repeating unsubscribe', asyn
   assert.equal((await f.run('handoff', handoff)).phase, 'desktop_owned');
   assert.equal(releases, 1); assert.ok(!f.events.includes('dispatch'));
 });
+test('background follower is not desktop handoff, including a previously misreported receipt', async t => {
+  let owner = 'background';
+  const f = await fixture(t, { desktopState: async () => ({ owner }),
+    releaseSource: async () => assert.fail('Must not release a background owner through Companion') });
+  const args = { requestId: 'background-handoff-0001', threadId };
+  let result = await f.run('handoff', args);
+  assert.equal(result.phase, 'waiting_writer_release');
+  assert.equal(result.owner, 'background');
+  assert.ok(!f.events.includes('open')); assert.equal(f.dispatches.length, 0);
+  const store = new Operations(f.dir);
+  const saved = await store.read(args.requestId);
+  await store.save(args.requestId, { ...saved, phase: 'desktop_owned', owner: 'desktop' });
+  result = await createFlows(f.options)('handoff', args);
+  assert.equal(result.phase, 'waiting_writer_release');
+  assert.equal(result.owner, 'background');
+  owner = 'desktop';
+  assert.equal((await f.run('handoff', args)).phase, 'desktop_owned');
+});
+test('explicit background handoff routes idle release and then verifies desktop takeover', async t => {
+  let owner = 'background'; let releases = 0;
+  const f = await fixture(t, { desktopState: async () => ({ owner }),
+    findBackgroundOwner: async () => ({ generation: 'fixture' }),
+    requestBackgroundOwner: async (_record, command, args) => {
+      assert.equal(command, 'release'); assert.equal(args.threadId, threadId); releases++;
+      return { phase: 'release_accepted' };
+    } });
+  const args = { threadId, requestId: 'explicit-background-handoff-0001' };
+  assert.equal((await f.run('handoff', args)).phase, 'waiting_source_release');
+  owner = 'desktop';
+  assert.equal((await f.run('handoff', args)).phase, 'desktop_owned');
+  assert.equal(releases, 1); assert.equal(f.dispatches.length, 0);
+});
 test('definite broker rejection after release intent retries once and then waits for unload', async t => {
   let held = true; let releases = 0;
   const f = await fixture(t, { writerPids: async () => held ? [123] : [], releaseSource: async (_id, _endpoint, { beforeRelease }) => {
@@ -116,7 +148,7 @@ test('busy source is not forcibly released or opened', async t => {
 });
 test('desktop acquisition pending retains one created thread across process restart', async t => {
   let available = false;
-  const f = await fixture(t, { desktopState: async () => { if (!available) throw new DispatchError('NO_OWNER', 'unattached'); return {}; } });
+  const f = await fixture(t, { desktopState: async () => { if (!available) throw new DispatchError('NO_OWNER', 'unattached'); return { owner: 'desktop' }; } });
   assert.equal((await f.run('create', args)).phase, 'waiting_desktop');
   available = true;
   assert.equal((await createFlows(f.options)('create', args)).phase, 'accepted');

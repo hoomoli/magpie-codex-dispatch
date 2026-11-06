@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { createLifecycle } from '../src/lifecycle.js';
 import { rpcRejection } from '../src/rpc.js';
 import { createFlows } from '../src/flows.js';
+import { Operations } from '../src/operations.js';
 const threadId = '01900000-0000-7000-8000-000000000001';
 const childId = '01900000-0000-7000-8000-000000000002';
 async function fixture(t, options = {}) {
@@ -23,7 +24,7 @@ async function fixture(t, options = {}) {
   } });
   return { calls, stateDirectory, run: createLifecycle({ stateDirectory, server, writers: options.writers ?? (async () => []), inspect: options.inspect ?? (async () => { throw Error('unknown owner'); }) }) };
 }
-for (const operation of ['archive', 'delete']) {
+for (const operation of ['archive']) {
   test(`${operation}: sends once, persists receipt, exposes operation status and rejects conflicting IDs`, async t => {
     const f = await fixture(t);
     const args = { threadId, requestId: 'lifecycle-test-0001' };
@@ -42,7 +43,7 @@ for (const operation of ['archive', 'delete']) {
     for (const held of [threadId, childId]) {
       const f = await fixture(t, { writers: async id => id === held ? [123] : [] });
       const result = await f.run(operation, { threadId, requestId: 'busy-test-0001' });
-      assert.equal(result.phase, 'waiting_writer_release');
+      assert.equal(result.phase, 'owner_action_required');
       assert.equal(result.completed, false);
       assert.equal(result.submitted, false);
       assert.equal(result.heldThreads[0].reason, 'OWNERSHIP_UNCONFIRMED');
@@ -61,22 +62,24 @@ for (const operation of ['archive', 'delete']) {
 }
 test('lifecycle validation happens before contacting Codex', async t => {
   const f = await fixture(t);
-  await assert.rejects(f.run('delete', { threadId: '../../bad', requestId: 'valid-id-0001' }), { code: 'INVALID_ARGUMENT' });
+  await assert.rejects(f.run('archive', { threadId: '../../bad', requestId: 'valid-id-0001' }), { code: 'INVALID_ARGUMENT' });
   assert.equal(f.calls.length, 0);
 });
-for (const operation of ['archive', 'delete']) {
+for (const operation of ['archive']) {
   test(`${operation}: idle desktop owner waits without sending; the same ID progresses after unload`, async t => {
     let held = true;
     const f = await fixture(t, { writers: async id => held && id === threadId ? [123] : [],
       inspect: async () => ({ owner: 'desktop', runtimeStatus: 'idle', status: 'completed', turnFound: true, pendingRequests: 0 }) });
     const args = { threadId, requestId: 'idle-desktop-0001' };
     const waiting = await f.run(operation, args);
-    assert.equal(waiting.heldThreads[0].reason, 'IDLE_OWNER_MUST_UNLOAD');
-    assert.equal(waiting.phase, 'waiting_writer_release');
+    assert.equal(waiting.heldThreads[0].reason, 'OWNER_ARCHIVE_REQUIRED');
+    assert.equal(waiting.phase, 'owner_action_required');
     assert.equal(waiting.completed, false);
+    assert.equal(waiting.automaticRetry, false);
+    assert.equal(waiting.retryAfterMs, undefined);
     assert.equal(f.calls.some(([m]) => m === `thread/${operation}`), false);
     const status = await createFlows({ stateDirectory: f.stateDirectory })('operation_status', { requestId: args.requestId });
-    assert.equal(status.phase, 'waiting_writer_release');
+    assert.equal(status.phase, 'owner_action_required');
     held = false;
     assert.equal((await f.run(operation, args)).completed, true);
     assert.equal(f.calls.filter(([m]) => m === `thread/${operation}`).length, 1);
@@ -98,10 +101,10 @@ for (const operation of ['archive', 'delete']) {
     }
   });
 }
-test('unreadable target retains a stage-specific receipt, never claims deletion or sends a mutation', async t => {
+test('unreadable target retains a stage-specific receipt, never claims archival or sends a mutation', async t => {
   const f = await fixture(t, { rejectRead: true });
   const args = { threadId, requestId: 'unavailable-test-0001' };
-  for (let i = 0; i < 2; i++) await assert.rejects(f.run('delete', args), { code: 'THREAD_UNAVAILABLE' });
+  for (let i = 0; i < 2; i++) await assert.rejects(f.run('archive', args), { code: 'THREAD_UNAVAILABLE' });
   const status = await createFlows({ stateDirectory: f.stateDirectory })('operation_status', { requestId: args.requestId });
   assert.equal(status.stage, 'read_target');
   assert.equal(status.rpcMethod, 'thread/read');
@@ -109,5 +112,27 @@ test('unreadable target retains a stage-specific receipt, never claims deletion 
   assert.equal(status.errorCode, 'THREAD_UNAVAILABLE');
   assert.equal(status.completed, false);
   assert.equal(status.submitted, false);
-  assert.equal(f.calls.some(([m]) => m === 'thread/delete'), false);
+  assert.equal(f.calls.some(([m]) => m === 'thread/archive'), false);
+});
+test('permanent deletion is refused before connection while legacy deletion receipts stay readable', async t => {
+  const f = await fixture(t);
+  const requestId = 'legacy-delete-receipt-01';
+  await new Operations(f.stateDirectory).save(requestId, { operation: 'delete', requestId, threadId,
+    fingerprint: 'historical-fingerprint', phase: 'deleted', completed: true, serverAcknowledged: true, reason: 'Use the old shared desktop lifecycle setup.' });
+  const status = await createFlows({ stateDirectory: f.stateDirectory })('operation_status', { requestId });
+  assert.equal(status.phase, 'deleted'); assert.equal(status.fingerprint, undefined);
+  assert.equal(status.retired, true); assert.equal(status.automaticRetry, false);
+  assert.doesNotMatch(status.reason, /shared|setup/); assert.match(status.reason, /do not retry/);
+  await assert.rejects(f.run('delete', { threadId, requestId }), { code: 'UNSUPPORTED_OPERATION' });
+  assert.equal(f.calls.length, 0);
+});
+test('old archive waiting receipts no longer recommend a timed retry loop', async t => {
+  const f = await fixture(t), requestId = 'old-archive-wait-01';
+  await new Operations(f.stateDirectory).save(requestId, { operation: 'archive', requestId, threadId,
+    fingerprint: 'historical-fingerprint', phase: 'waiting_writer_release', completed: false, retryAfterMs: 5000, reason: 'Use the old shared desktop lifecycle setup.' });
+  const status = await createFlows({ stateDirectory: f.stateDirectory })('operation_status', { requestId });
+  assert.equal(status.phase, 'owner_action_required'); assert.equal(status.legacyPhase, 'waiting_writer_release');
+  assert.equal(status.automaticRetry, false); assert.equal(status.retryAfterMs, undefined);
+  assert.doesNotMatch(status.reason, /shared|setup/);
+  assert.equal(f.calls.length, 0);
 });

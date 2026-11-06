@@ -8,6 +8,8 @@ import { Operations, digest, requestKey } from './operations.js';
 import { createDispatcher } from './dispatch.js';
 import { DispatchError } from './desktop.js';
 import { desktopState, inspectOwnership, openThread, releaseSource, validateThread, writerPids } from './ownership.js';
+import { retainedOwner, requestOwner, readOwnerOutcome } from './owner-control.js';
+import { acquireFileLock } from './locks.js';
 
 function validate(operation, args) {
   requestKey(args?.requestId);
@@ -55,11 +57,41 @@ export function createFlows(options = {}) {
       return background(args, { abort });
     }
     if (operation === 'projects') return listProjects({ signal: abort, server });
-    if (operation === 'ownership') return inspect(args.threadId, { signal: abort, socketPath: options.socketPath });
+    if (operation === 'ownership') {
+      const state = await inspect(args.threadId, { signal: abort, socketPath: options.socketPath });
+      if (state.owner === 'background') {
+        const record = await retainedOwner(directory, args.threadId);
+        if (record) {
+          try { state.backgroundControl = { available: true, ...await requestOwner(record, 'status',
+            { threadId: args.threadId, requestId: `inspect-${args.threadId}` }, { signal: abort, timeoutMs: 2000 }) }; }
+          catch (error) { state.backgroundControl = error.code === 'UNSUPPORTED_OPERATION'
+            ? { available: true, statusAvailable: false } : { available: false }; }
+        } else state.backgroundControl = { available: false };
+      }
+      return state;
+    }
     if (operation === 'operation_status') {
       const state = await new Operations(backgroundDirectory(directory)).read(args.requestId) ?? await store.read(args.requestId);
       if (!state) throw new DispatchError('OPERATION_NOT_FOUND', 'No operation exists for this requestId.');
-      if (['archive', 'delete'].includes(state.operation)) { const { fingerprint: _, ...result } = state; return result; }
+      if (['archive', 'delete'].includes(state.operation)) {
+        const { fingerprint: _, ...result } = state;
+      if (state.route === 'background-owner' && state.operation === 'archive') {
+        const receipt = await readOwnerOutcome(directory, { requestId: args.requestId, threadId: state.threadId });
+        if (receipt) return { ...result, ...receipt };
+      }
+        if (state.operation === 'delete') {
+          const { retryAfterMs: ignored, ...historical } = result;
+          return { ...historical, retired: true, automaticRetry: false, retrySameRequestId: false,
+            reason: 'Historical deletion receipt only. Permanent deletion is no longer available; do not retry this operation. Inspect current state separately.' };
+        }
+        if (state.phase === 'waiting_writer_release') {
+          const { retryAfterMs: ignored, ...historical } = result;
+          return { ...historical, legacyPhase: state.phase, phase: 'owner_action_required', supported: false,
+            actionRequired: 'archive_in_owner', automaticRetry: false, retryOnlyAfter: 'confirmed_writer_release',
+            reason: 'Held archival is outside plugin scope. Archive in the owning desktop/client; retry this archive request only after confirmed natural writer release. No automatic retry or app restart.' };
+        }
+        return result;
+      }
       return publicState(state);
     }
     if (operation === 'recover_creation') {
@@ -87,7 +119,7 @@ export function createFlows(options = {}) {
       const fp = fingerprint(operation, args);
       let state = await store.read(args.requestId);
       if (state && state.fingerprint !== fp) throw new DispatchError('REQUEST_ID_CONFLICT', 'This requestId belongs to different arguments.');
-      if (['accepted', 'desktop_owned'].includes(state?.phase)) return { ...publicState(state), replayed: true };
+      if (state?.phase === 'accepted') return { ...publicState(state), replayed: true };
       state ??= { requestId: args.requestId, operation, fingerprint: fp, phase: 'preparing', accepted: false,
         ...(operation === 'handoff' ? { threadId: args.threadId } : {}) };
       const save = async patch => { state = { ...state, ...patch }; await store.save(args.requestId, state); };
@@ -153,6 +185,29 @@ export function createFlows(options = {}) {
       }
       let desktop;
       try { desktop = await attach(state.threadId, settings); } catch (error) { if (abort?.aborted) throw error; }
+      const waitForActualDesktop = async () => {
+        if (!desktop || desktop.owner === 'desktop') return false;
+        if (operation === 'handoff' && desktop.owner === 'background') {
+          const owner = await (options.findBackgroundOwner ?? retainedOwner)(directory, state.threadId);
+          if (owner) {
+            if (args.sourceEndpoint) throw new DispatchError('SOURCE_MISMATCH', 'A Companion endpoint cannot release this background owner.');
+            const unlock = await acquireFileLock(join(directory, `thread-${digest(state.threadId.toLowerCase())}.mutex`), { signal: abort });
+            let receipt;
+            try {
+              await save({ phase: 'background_release_requested', owner: 'background' });
+              receipt = await (options.requestBackgroundOwner ?? requestOwner)(owner, 'release', { requestId: args.requestId, threadId: state.threadId }, { signal: abort });
+            } finally { await unlock(); }
+            if (receipt.phase !== 'release_accepted') throw new DispatchError('OUTCOME_UNKNOWN', 'Background release was not confirmed. Inspect the same request ID.');
+            await save({ phase: 'waiting_source_release', owner: 'background', source: { kind: 'background' },
+              reason: 'Idle background owner accepted release. Retry this handoff ID to confirm unload and attach desktop.' });
+            return true;
+          }
+        }
+        await save({ phase: 'waiting_writer_release', owner: desktop.owner ?? 'unknown',
+          reason: 'The follower is connected to a non-desktop owner. Wait for normal source release; desktop ownership is not confirmed.' });
+        return true;
+      };
+      if (await waitForActualDesktop()) return publicState(state);
       if (!desktop) {
         const pids = await writers(state.threadId);
         if (pids.length) {
@@ -172,10 +227,11 @@ export function createFlows(options = {}) {
             reason: 'A writer still holds this thread. Retry the same ID; the plugin will not force release.' });
           return publicState(state);
         }
-        await save({ phase: 'waiting_desktop', reason: 'Waiting for the native desktop to attach.' });
+        await save({ phase: 'waiting_desktop', owner: 'unattached', reason: 'Waiting for the native desktop to attach.' });
         await open(state.threadId);
         try { desktop = await attach(state.threadId, settings); }
         catch (error) { if (abort?.aborted) throw error; return publicState(state); }
+        if (await waitForActualDesktop()) return publicState(state);
       }
       if (operation === 'handoff') {
         await save({ phase: 'desktop_owned', owner: 'desktop', reason: null });

@@ -2,7 +2,7 @@
 
 [中文说明](README.zh-CN.md) · [Ownership contract / 控制权规范](docs/ownership.md)
 
-Current version: **0.0.7** — background creation without navigation, desktop follower streaming, and event-driven Claude review.
+Current release version: **0.0.8** — retained background execution, desktop follower streaming, event-driven Claude review, stored-history status, and archival through the original background owner or an unattached subtree. Permanent deletion and direct archival of desktop-owned chats remain outside the supported scope.
 
 The display name is `magpie-codex-dispatch`; the version belongs in Magpie’s separate version badge. Local-directory installs hide that badge, so use `codex_plugin_info` to verify their loaded version. Git-based installs also show a commit identifier managed by Magpie.
 
@@ -29,6 +29,8 @@ Claude / other MCP client
 
 New tasks execute in a detached worker using the app-bundled AppServer. The worker verifies effective permissions, publishes native follower snapshots, and forwards approvals and guarded interruptions. The desktop displays progress without a separate dashboard. Existing desktop-thread dispatch and explicit Companion handoff retain their native-owner path. No new task is opened or pinned automatically.
 
+Release acceptance remains **CLOSED**. The owner explicitly accepted the unresolved findings and authorized this release. All required local checks passed; see the [0.0.8 release record](docs/verification.md).
+
 ## Install and connect Claude
 
 Requires macOS, a running Codex desktop app, and Magpie with community plugin tools enabled:
@@ -54,6 +56,12 @@ Ask Claude, for example:
 
 For an old Companion session, first stop sending commands to that thread through the old openai-codex integration. Ask Claude to inspect ownership, hand off the idle session, and wait for `desktop_owned`. Subsequent commands use this plugin's follower tools; the desktop remains the writer.
 
+## Local debugging and unloaded status
+
+Install this checkout by absolute path after disabling the existing Git installation, then remove the old Git entry once local loading is verified. Do not leave two enabled copies. `codex_plugin_info.moduleUrl` identifies the loaded source; check `pluginVersion` and `loadedAt` after toggling the local plugin off/on following code changes. Editing files alone does not reload the host.
+
+For threads without a writer, `codex_status` reads stored history through a read-only AppServer instead of waiting for desktop owner discovery. It never resumes a thread. Results explicitly carry `source: persisted-history`, `historyOnly: true`, and `runtimeStatus: notLoaded`; runtime permissions and pending requests remain unknown. Empty/missing turns are not success, and a persisted in-progress turn is not reported as live activity. Explicit historical turn lookup is bounded to 200 turns with `historyTruncated` when exceeded. If a writer attaches during the read, status switches to live desktop lookup. An unattached ownership result does not prove thread existence or deletion.
+
 ## Tools
 
 Plugin-specific MCP exposes these names. The combined endpoint prefixes them with `magpie-codex-dispatch_`; inspect `tools/list` for the actual names.
@@ -72,18 +80,25 @@ Plugin-specific MCP exposes these names. The combined endpoint prefixes them wit
 | `codex_dispatch` | `threadId`, `prompt`, `requestId`, optional `permissionMode` | Start the next turn in an idle native thread |
 | `codex_followup` | `threadId`, `turnId`, `prompt`, `requestId` | Steer an active turn |
 | `codex_stop` | `threadId`, `turnId`, `requestId` | Request cancellation of the specified active turn |
+| `codex_archive` | `threadId`, `requestId` | Archive through a verified idle background owner, or archive an unattached persisted subtree |
 
-### Archive and delete
+### Supported archival scope
 
-`codex_archive({threadId, requestId})` archives a persisted thread and attempts to archive its spawned descendants. `codex_delete({threadId, requestId})` permanently deletes the persisted active/archived thread and its spawned descendants; use only for an explicitly user-requested deletion of that scope.
+See [retained-owner lifecycle](docs/background-owned-thread-lifecycle.md) for the private control protocol, resource policy, failure handling and local acceptance procedure. Explicit handoff relinquishes background ownership and its owner-routed archive capability.
 
-Both enumerate active and archived descendants. A fresh owner snapshot showing active work or pending input/approval fails with `THREAD_ACTIVE`. Held idle or unconfirmed owners return `completed: false`, `phase: waiting_writer_release`, and `heldThreads` reasons (`IDLE_OWNER_MUST_UNLOAD` or `OWNERSHIP_UNCONFIRMED`). Wait for normal owner unload and retry the same request ID; no operation runs automatically while waiting. Desktop-loaded idle threads still cannot be mutated immediately: follower IPC exposes no archive/delete command, and a second AppServer rejects another writer's thread. These tools never interrupt work, force handoff, or remove writer locks. Plugin mutexes cannot prevent another client from resuming between the ownership check and mutation; avoid concurrent desktop/client operations.
+`codex_archive({threadId, requestId})` archives persisted threads through their **verified retained plugin background owner**, or when the root and every discovered descendant have no writer. Background requests are authenticated and routed to the original owning connection; any held descendant is refused. A fresh owner snapshot showing active work or pending input/approval fails with `THREAD_ACTIVE`. Any other holder returns `completed: false`, `submitted: false`, `phase: owner_action_required`, `automaticRetry: false`, and `actionRequired: archive_in_owner`. Stop automatic retries and archive in the owning desktop/client. The same archive request may be retried only after confirmed natural writer release; the plugin does not restart apps or force release.
 
-Lifecycle preflight failures now have durable `codex_operation_status` receipts with `stage`, `errorCode`, and available `rpcMethod` / `rpcCode`. A `thread/read` rejection saying the thread is not loaded becomes `THREAD_UNAVAILABLE`; it is not proof of deletion. Failed preflight and waiting requests can be retried with the same ID, while submitted unknown outcomes are never resent.
+`completed: true` and `serverAcknowledged: true` confirm the app-server archive acknowledgment; descendant notifications may be incomplete and immediate sidebar refresh is not promised. Verify active/archived inventories independently. An unavailable thread is not proof of cleanup. Plugin locks do not coordinate external clients; avoid concurrent resume/mutation.
 
-Reuse the same request ID and arguments. Server acknowledgment is persisted; observed `affectedThreadIds` notifications may be incomplete and archive is best-effort for descendants. Lost replies retain `outcome_unknown` and are never automatically resent, including after restart. Inspect `codex_operation_status` and actual Codex state before taking further action. No direct-file deletion fallback is used. See [verification](docs/verification.md) for the isolated real-server check.
+Archive preflight failures retain stage/error diagnostics in `codex_operation_status`. Lost mutation replies remain `outcome_unknown`; even the same request ID does not resend an uncertain submission. Inspect the receipt and actual state first.
+
+**Permanent deletion is no longer offered.** `codex_delete` has been removed rather than silently changed into archive. Historical deletion receipts remain readable through `codex_operation_status`, marked `retired: true` without retry advice. A new archive operation needs its own request ID, distinct from an old deletion ID. Resolve unknown old mutation outcomes before another lifecycle operation.
+
+The final native-entry audit found no independently callable desktop archive path meeting the normal-startup requirement: the installed native tools pipe rejected Magpie's Bun peer with `untrusted-code-signing-identity`, and follower IPC has no archive/release request. The plugin does not impersonate official callers or share a backend. See [capabilities and final audit](docs/app-server-capabilities.md). This is an explicit scope reduction, not a claim that desktop-held cleanup was fixed.
 
 ### Create in a project
+
+For idle desktop-held chats, a locally verified alternative is to [delegate an explicit archive manifest to a desktop-owned Codex chat](docs/native-archive-bridge.md) using existing create/handoff/dispatch tools. The native turn performs archival; direct plugin archival retains the boundary above. This needs neither shared backend nor special startup. It is an orchestration recipe, not permanent deletion or a released automatic fallback.
 
 ```json
 {
@@ -135,6 +150,7 @@ Native commands acquire a per-thread kernel lock before reading desktop state an
 
 When upgrading from directory-based locks, stop old plugin hosts before loading this version. Dead legacy `.lock` and `.recovery` directories are retained but do not block progress; a live or incomplete legacy owner still requires inspection. These plugin locks do not serialize desktop UI actions or other clients that bypass the plugin.
 
+
 ## Ownership and limitations
 
 - A thread has one writer. Normal Claude ↔ Codex interaction uses the desktop's follower interface and does **not** transfer the writer back and forth.
@@ -160,6 +176,16 @@ Set optional environment variables on the **Magpie plugin host**, not only Claud
 
 Sockets must belong to the current user. State directory permissions are `0700`, files `0600`. The plugin never reads credentials directly or edits Codex session storage; the bundled app-server uses the user's existing Codex setup. MCP access grants local task execution and assistant-output reads: limit it to trusted clients through Magpie. Prompts are limited to 64 KiB and protocol frames to 32 MiB. Raw internal errors and conversation payloads are not included in error messages.
 
+## Claude onboarding and release acceptance
+
+From a new Claude Code session in this checkout:
+
+```sh
+npm run acceptance:connect -- --prepare --current-session
+```
+
+Have that Claude read/execute the generated `brief.txt`. Use `acceptance:release` for the full matrix and `acceptance:release:check` before publication. A connection pass covers basic create/read/notification integration only. Failures, blocked cases, missing evidence, and changed source snapshots keep the release gate closed. See [entry points](docs/acceptance/README.md) and the [complete matrix](docs/acceptance/claude-release-gate.md).
+
 ## Verification and development
 
 No build step. Runtime dependencies are pinned in package-lock.json (MCP SDK for the Claude channel and Immer for desktop state patches). Run npm ci for local checkout installs. Node 22+ for the channel; Magpie supplies Bun for plugin tools. File locking requires the macOS system utility `/usr/bin/lockf` with inherited-file-descriptor support; an unavailable utility fails before submission.
@@ -183,7 +209,7 @@ For Claude Desktop Code opened from the Dock, run `node src/install-desktop.js` 
 
 ## Background lifecycle and limitations
 
-The private background directory contains request fingerprints, worker receipts, transient 0600 input files (removed when read), and terminal output summaries. Request IDs are never replayed after uncertain submission. A disconnected desktop is retried with bounded backoff without restarting work. After a turn completes, the worker persists its terminal summary and remains available for 60 seconds; completion monitoring can recover the exact turn from this private result after the worker exits. Claude's model does not poll.
+The private background directory contains request fingerprints, worker receipts, transient 0600 input files (removed when read), and terminal output summaries. Request IDs are never replayed after uncertain submission. A disconnected desktop is retried with bounded backoff without restarting work. After a turn completes, the worker persists its terminal summary and retains ownership until explicit `codex_archive` or idle `codex_handoff`. At most eight owners per state directory are admitted; additional creation fails before a new thread is created. Archival ACK precedes a genuine desktop notification and resource release. Plugin reload does not terminate retained workers. A crashed owner is never automatically recreated; completion monitoring can still read the exact persisted terminal result. Claude's model does not poll.
 
 An unexpected worker crash does not automatically re-run a task: inspect the saved operation and native thread. Unsupported server requests receive an explicit error, never automatic approval. Desktop approval, input, interrupt and next-turn commands use the same worker while it owns the thread; ordinary desktop ownership can resume after it exits. Private IPC versions are checked and remain app-version dependent. Large histories that exceed the 32 MiB frame limit cannot be streamed by this version; work is not replayed to compensate.
 

@@ -12,14 +12,17 @@ export class BackgroundRuntime {
     Object.assign(this, { rpc, publish, onComplete, onUnsupported });
     this.revision = 0; this.input = []; this.requests = new Map(); this.mutation = Promise.resolve();
     this.handle = (method, params) => {
-      const result = this.mutation.then(() => this.command(method, params));
-      this.mutation = result.catch(() => {}); return result;
+      return this.exclusive(() => this.command(method, params));
     };
     this.handle.supports = method => Object.hasOwn(responses, method) || ['thread-follower-start-turn',
       'thread-follower-steer-turn', 'thread-follower-interrupt-turn', 'thread-follower-update-thread-settings',
       'thread-follower-read-model-settings', 'thread-follower-load-complete-history'].includes(method);
   }
   initialize(result, title) { this.state = conversationState(result.thread, result, title); }
+  exclusive(fn) {
+    const result = this.mutation.then(fn);
+    this.mutation = result.catch(() => {}); return result;
+  }
   snapshot() { return { state: this.state, revision: this.revision }; }
   changed() { this.revision++; this.publish(this.snapshot()); }
   notify(m) {
@@ -47,6 +50,7 @@ export class BackgroundRuntime {
       throw new DispatchError('THREAD_NOT_IDLE', 'The background thread is not idle.');
   }
   async start(request) {
+    if (this.lifecycleBlocked) throw new DispatchError('OWNER_CLOSING', 'A lifecycle operation blocks further execution. Inspect its receipt.');
     this.idle();
     if (request.threadId !== this.state.id || !Array.isArray(request.input)) throw Error('Invalid turn target');
     this.input = request.input;
@@ -54,6 +58,8 @@ export class BackgroundRuntime {
   }
   async command(method, p) {
     if (p.conversationId !== this.state.id) throw Error('Wrong thread');
+    if (this.lifecycleBlocked && method !== 'thread-follower-load-complete-history' && method !== 'thread-follower-read-model-settings')
+      throw new DispatchError('OWNER_CLOSING', 'A lifecycle operation blocks mutations. Inspect its receipt.');
     if (Object.hasOwn(responses, method)) {
       const pending = this.requests.get(String(p.requestId));
       if (!pending || pending.method !== responses[method]) throw Error('Approval/request no longer pending');

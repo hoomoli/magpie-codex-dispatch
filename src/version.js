@@ -4,3 +4,4 @@ import metadata from '../package.json' with { type: 'json' };
 export const pluginName = metadata.name;
 export const pluginVersion = metadata.version;
 export const loadedAt = new Date().toISOString();
+export const moduleUrl = import.meta.url;

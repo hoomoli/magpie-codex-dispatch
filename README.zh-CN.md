@@ -1,6 +1,10 @@
 # magpie-codex-dispatch
 
-当前版本：**0.0.7**。新任务后台执行、普通侧栏刷新、不置顶不跳转，完成后通过已有事件钩子唤醒 Claude。
+当前发布版本：**0.0.8**。新任务后台执行、普通侧栏刷新、不置顶不跳转，完成后通过已有事件钩子唤醒 Claude。
+
+桌面持有的空闲会话还可采用已本地验证的[原生归档中转流程](docs/native-archive-bridge.md)：插件创建准备会话，确认桌面接管后再派发清单，由该会话调用官方原生归档工具。无需共用后端、特殊启动或重启桌面。这是现有工具的编排方式，尚非自动归档回退或永久删除能力，完整发布验收仍未通过。
+
+发布验收门禁仍为 **CLOSED**；所有者已明确接受未解决问题并授权发布；必需本地检查均已通过。详见 [0.0.8 发布记录](docs/verification.md)。
 
 显示名称固定为 `magpie-codex-dispatch`，版本使用 Magpie 独立的版本徽标。本地目录安装不显示该徽标，可用 `codex_plugin_info` 核实运行版本；Git 安装还会显示由 Magpie 管理的提交标识。
 
@@ -44,6 +48,18 @@ magpie plugin add ./magpie-codex-dispatch
 magpie library mcp agents magpie-codex-dispatch claude
 ```
 
+本地调试时，先停用原 Git 安装，再添加本仓库的绝对路径，确认加载成功后移除原 Git 条目，避免重复工具：
+
+```sh
+magpie plugin off 'github:hoomoli/magpie-codex-dispatch#main'
+magpie plugin add /absolute/path/to/magpie-codex-dispatch
+magpie tool magpie-codex-dispatch_codex_plugin_info --json
+```
+
+检查返回的 `moduleUrl` 指向本仓库，版本为 `0.0.8-local.1`。本地文件修改后仍须停用/启用插件以重载宿主，再查询 `loadedAt`；不以磁盘版本或界面缓存判断生效。原 Git 来源名称以本机安装记录为准。
+
+状态查询：无写入方时通过只读 AppServer 查询持久化历史，不恢复会话、不等待桌面所有者；返回 `source: persisted-history`、`historyOnly: true`、`runtimeStatus: notLoaded`。历史完成不代表实时运行状态；空历史或找不到指定轮次返回 `status: unknown`。指定旧轮次最多检查 200 轮，超过范围标记 `historyTruncated`。读取期间出现新写入方则改查桌面实时状态。`codex_ownership` 的无写入方结果只表示未挂载，不证明会话存在或已删除。
+
 Magpie 会把此插件的 HTTP MCP 配置写入 Claude。新开 Claude 会话加载工具。Library 接入与手动配置 MCP 二选一，避免重复工具；地址、端口及认证以本机 Magpie 的 Installed/Library 页面为准。无需改变 Claude 模型配置。
 
 可以对 Claude 说：
@@ -69,25 +85,16 @@ Magpie 会把此插件的 HTTP MCP 配置写入 Claude。新开 Claude 会话加
 | `codex_dispatch` | `threadId`、`prompt`、`requestId` | 在空闲原生会话开始下一轮 |
 | `codex_followup` | 再加 `turnId` | 向进行中的轮次补充指令 |
 | `codex_archive` | `threadId`、`requestId` | 归档目标并尝试归档派生子会话；区分运行中和等待所有者卸载 |
-| `codex_delete` | `threadId`、`requestId` | 永久删除目标及派生子会话；需用户明确要求，持锁时等待卸载 |
 | `codex_stop` | `threadId`、`turnId`、`requestId` | 请求中断指定的进行中轮次 |
 
-### 归档与永久删除
+### 归档的支持范围
 
-- `codex_archive`：传入 `threadId`、唯一 `requestId`，通过 AppServer `thread/archive` 归档目标，并尝试归档派生子会话。
-- `codex_delete`：参数相同，通过 `thread/delete` 永久删除目标及派生子会话。仅在用户明确要求删除该范围时调用；不可恢复，不是仅从侧栏隐藏。
-- 两者都要求持久化会话。执行前分页枚举活动及已归档的派生子会话，检查目标和已发现子会话的写入方。若实时快照显示运行中或待输入/审批，返回 `THREAD_ACTIVE`；若空闲但仍持锁，返回 `completed: false`、`phase: waiting_writer_release`，其中 `heldThreads` 区分 `IDLE_OWNER_MUST_UNLOAD` 与无法核实所有权的 `OWNERSHIP_UNCONFIRMED`。
-- 等待状态不是已接受删除，也不是完成。插件不在后台自动重试；先由所有者正常卸载，再按相同参数和 `requestId` 重试。已加载的桌面空闲会话目前仍不能立即归档/删除：桌面跟随协议没有生命周期命令，独立 AppServer 会拒绝其他写入方持有的目标。不要仅依据“空闲”跳过此限制，不删除锁、不杀共享进程。
-- `codex_operation_status` 现在也记录生命周期预检失败，包含 `stage`、`errorCode` 以及可用的 `rpcMethod`、`rpcCode`。读取时的 `thread not loaded` 归类为 `THREAD_UNAVAILABLE`，表示当前无法读取持久化会话，不是删除成功或历史从未存在的证据。该请求未发送删除命令，可在核实目标后使用相同请求 ID 重试。
-- 同一逻辑操作重试保持相同参数和 `requestId`。`completed: true` / `serverAcknowledged: true` 表示 Codex 服务端已确认；`affectedThreadIds` 仅是该连接已观察到的通知，可能不完整，归档不保证所有子会话成功。回执是历史结果，不代表之后没有被其他客户端恢复。
-- 超时或丢回执保留 `outcome_unknown`，同 ID 重试不会再次发送；用 `codex_operation_status` 查看回执，再核对 Codex 实际状态，不能换 ID 自动重发。
-- 插件锁只协调插件调用；检查写入方与服务端变更之间不是跨客户端原子事务，操作时应避免桌面或其他客户端同时恢复/派发。服务端不支持时不降级为删除本地文件。
-
-```json
-{"threadId":"目标会话 UUID","requestId":"archive-task-0001"}
-```
-
-当前接口支持情况已按本机 Codex 0.166.0 的实验性协议定义与隔离 AppServer 实测核对。详见 [验收记录](docs/verification.md)。
+- `codex_archive` 支持由**核实过的原插件后台 owner**归档自己持有的空闲会话，也支持目标及已发现子会话均无写入方的持久化会话。归档请求通过插件私有通道送回原持有连接；持锁子会话仍拒绝。发现运行或待审批/输入状态返回 `THREAD_ACTIVE`。详见[后台持有与归档流程](docs/background-owned-thread-lifecycle.md)。
+- 其他持锁情况返回 `completed: false`、`submitted: false`、`phase: owner_action_required`、`automaticRetry: false`，要求在所属桌面/客户端归档。停止自动重试；只有确认写入方自然释放后，才可用原归档 requestId 重试。不要求重启，不强抢锁。
+- `completed: true` 与 `serverAcknowledged: true` 仅表示服务端确认；需独立核对活动/归档列表。子会话通知可能不完整，不承诺侧栏立即刷新；无法读取不等于清理成功。
+- 归档预检失败仍保存阶段和安全错误信息；丢失变更回执保留 `outcome_unknown`，即使原 requestId 重试也不会再次发送，先查询 `codex_operation_status` 并核对实际状态。
+- **永久删除工具 `codex_delete` 已移除**，不会暗中改成归档。旧删除回执仍可由 `codex_operation_status` 查询，标记 `retired: true`，不再提示重试。新的归档操作必须使用不同的 requestId；旧变更结果不明时先核实，不盲目另发。
+- 最终核查中，原生工具管道以 `untrusted-code-signing-identity` 拒绝了 Magpie 的 Bun 客户端；follower IPC 也没有归档/释放请求。当前版本没有找到符合正常启动要求的独立入口。插件不会冒充官方调用方，也不再使用共用后端。详见[能力与最终核查记录](docs/app-server-capabilities.md)。
 
 ### 新建指定项目的会话
 
@@ -143,6 +150,7 @@ Magpie 会把此插件的 HTTP MCP 配置写入 Claude。新开 Claude 会话加
 
 从旧目录锁版本升级时，先停止旧插件宿主，再加载新版本。已退出进程留下的 `.lock` 和 `.recovery` 目录保留供检查，不再阻塞流程；仍存活或记录不完整的旧持有方不会被绕过。这些锁只协调共用状态目录的插件调用，不能阻止桌面界面或绕过插件的其他客户端并发操作。
 
+
 ## 控制权边界
 
 - 一个会话只有一个写入方。正常 Claude ↔ Codex 对话走桌面跟随接口，不需要每轮互相释放写锁。
@@ -170,6 +178,18 @@ Magpie 会把此插件的 HTTP MCP 配置写入 Claude。新开 Claude 会话加
 
 socket 必须属于当前用户。状态目录权限为 `0700`、文件为 `0600`。插件不直接读取凭证、不改写 Codex 会话存储；桌面自带 app-server 使用现有登录配置。获得 MCP 权限即可派发本地任务和读取助手输出，应通过 Magpie 限定可信客户端。提示词上限 64 KiB，协议帧上限 32 MiB，错误信息不输出内部原始载荷。
 
+## Claude 接通测试与发布验收
+
+新接入的 Claude Code 在本仓库运行：
+
+```sh
+npm run acceptance:connect -- --prepare --current-session
+```
+
+然后让当前 Claude 读取命令输出目录中的 `brief.txt` 并执行。发布前使用 `acceptance:release` 准备完整验收，并通过 `acceptance:release:check` 独立校验。接通通过只证明基本创建、查询、通知链路，不能代替完整发布验收。任何失败、阻塞、缺失证据或源码变化都不能放行发布。
+
+完整入口和步骤见 [验收说明](docs/acceptance/README.md) 与 [完整测试矩阵](docs/acceptance/claude-release-gate.md)。
+
 ## 开发与验证
 
 无需构建。运行依赖已固定在 package-lock.json：MCP SDK 用于 Claude Channel，Immer 用于桌面状态增量。本地目录安装先运行 npm ci；Channel 使用 Node 22+，Magpie 工具使用自带 Bun。文件锁依赖 macOS 系统自带的 `/usr/bin/lockf` 及其继承文件描述符能力；工具不可用时会在提交前报错。
@@ -193,6 +213,6 @@ npm run probe -- <thread-uuid>
 
 为刷新普通侧栏，插件仅对自己刚创建、尚未执行的空会话做一次真实归档与恢复，后台恢复并启动任务后转发该恢复事件。不会归档已有任务，不会强抢写锁。
 
-桌面断线时后台任务继续，连接按退避重试，不重新派发。任务完成后保存私有终态摘要，并保留执行进程 60 秒供通知组件订阅；进程退出后仍可按准确的会话和轮次恢复完成通知。旧 Claude Pre/PostToolUse 与 asyncRewake 回传链路继续使用，不需要换启动入口。
+桌面断线时后台任务继续，连接按退避重试，不重新派发。任务完成后保存私有终态摘要，继续保留原 owner，直到明确调用 `codex_archive` 或空闲交接 `codex_handoff`。每个状态目录最多保留 8 个后台 owner，超限时在新建会话前拒绝。归档收到真实 ACK 后才通知桌面并释放连接、控制 socket 和容量。插件重载不终止这些独立后台；后台崩溃后不会自动重建或抢回 owner，仍可按准确会话和轮次读取已保存结果。旧 Claude Pre/PostToolUse 与 asyncRewake 回传链路继续使用，不需要换启动入口。
 
 后台进程异常退出不会自动重跑。未知审批请求明确报错，不自动批准。旧版未完成的创建请求不能自动迁移，以免重复执行。私有桌面协议受应用版本影响；本版完整快照超过 32 MiB 时不能继续实时推送，不会因此重复派发任务。

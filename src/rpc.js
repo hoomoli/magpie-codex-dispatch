@@ -8,7 +8,7 @@ import { pluginVersion } from './version.js';
 
 const MAX_BYTES = 32 * 1024 * 1024;
 const ALLOWED = new Set(['initialize', 'project/list', 'project/read', 'thread/start', 'thread/read',
-  'thread/list', 'thread/name/set', 'thread/unsubscribe', 'thread/loaded/list']);
+  'thread/list', 'thread/turns/list', 'thread/name/set', 'thread/unsubscribe', 'thread/loaded/list']);
 
 // Classify known server errors without forwarding payloads, paths or prompts.
 export function rpcRejection(method, params, failure, companion = false) {
@@ -113,7 +113,7 @@ export class AppServer {
     return result;
   }
   request(method, params = {}) {
-    const lifecycleAllowed = this.lifecycle && !this.companion && ['thread/archive', 'thread/delete'].includes(method);
+    const lifecycleAllowed = this.lifecycle && !this.companion && method === 'thread/archive';
     if (!ALLOWED.has(method) && !lifecycleAllowed && !(this.execution && !this.companion && new Set(['thread/archive', 'thread/unarchive', 'thread/resume', 'thread/settings/update', 'turn/start', 'turn/steer', 'turn/interrupt']).has(method))) return Promise.reject(new DispatchError('UNSUPPORTED_METHOD', 'This temporary client cannot execute turns or arbitrary commands.'));
     if (this.failure) return Promise.reject(this.failure);
     return new Promise((resolve, reject) => {

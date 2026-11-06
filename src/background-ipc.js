@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { versions } from './desktop.js';
 import { DispatchError } from './errors.js';
-export const ownerVersions = { ...versions, 'thread-stream-following-status-requested': 1,
+export const ownerVersions = { ...versions, 'thread-archived': 2, 'thread-stream-following-status-requested': 1,
   'thread-unarchived': 1, 'thread-follower-command-approval-decision': 1,
   'thread-follower-file-approval-decision': 1, 'thread-follower-permissions-request-approval-response': 1,
   'thread-follower-submit-user-input': 1, 'thread-follower-submit-mcp-server-elicitation-response': 1,
@@ -41,11 +41,11 @@ export class BackgroundIPC {
     });
     this.broadcast('thread-stream-following-status-requested', { hostId: 'local', conversationId: this.threadId });
   }
-  send(m) {
+  send(m, flushed) {
     const body = Buffer.from(JSON.stringify(m));
     if (body.length > 32 * 1024 * 1024) throw new DispatchError('FRAME_TOO_LARGE', 'Desktop snapshot exceeds frame limit.');
     const head = Buffer.alloc(4); head.writeUInt32LE(body.length); if (this.socket.writableLength > 32 * 1024 * 1024) { this.socket.destroy(); throw new DispatchError('SLOW_CONSUMER', 'Desktop connection is not consuming updates.'); }
-    this.socket.write(Buffer.concat([head, body]));
+    this.socket.write(Buffer.concat([head, body]), flushed);
   }
   broadcast(method, params, targets) {
     this.send({ type: 'broadcast', method, params, version: ownerVersions[method], sourceClientId: this.clientId,
@@ -87,5 +87,12 @@ export class BackgroundIPC {
     if (m.method === 'ipc-connection-reset') this.socket.destroy();
   }
   announce() { this.broadcast('thread-unarchived', { hostId: 'local', conversationId: this.threadId }); }
+  async archived(ids) {
+    if (this.closed || !this.socket?.writable) throw new DispatchError('DISCONNECTED', 'Desktop archive notification is unavailable.');
+    for (const id of ids) await new Promise((resolve, reject) => {
+      this.send({ type: 'broadcast', method: 'thread-archived', version: 2, sourceClientId: this.clientId,
+        params: { hostId: 'local', conversationId: id } }, e => e ? reject(e) : resolve());
+    });
+  }
   close() { this.closed = true; this.followers.clear(); this.socket?.destroy(); }
 }

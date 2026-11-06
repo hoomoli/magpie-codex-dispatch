@@ -48,6 +48,9 @@ export async function desktopState(threadId, { signal, socketPath, timeoutMs = 2
 }
 export async function inspectOwnership(threadId, options = {}) {
   validateThread(threadId);
+  // No holder means there is no owner for desktop discovery to answer. This does not prove existence.
+  if (!(await writerPids(threadId)).length) return { threadId, owner: 'unattached', writerPids: [],
+    runtimeStatus: 'notLoaded', existence: 'unverified', threadUrl: `codex://threads/${threadId}` };
   try { return await desktopState(threadId, options); }
   catch (error) {
     if (options.signal?.aborted) throw error;

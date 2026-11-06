@@ -2,7 +2,47 @@
 
 # Verification / 验收记录
 
-Verification history on **2026-11-03**, through local version **0.2.2**. Original 0.2.1 acceptance is retained below. No credentials, private conversations, machine paths or raw runtime logs are published here.
+## Version 0.0.8 (2026-11-06)
+
+- Publication was explicitly authorized by the owner despite the release acceptance gate remaining **CLOSED**. The owner chose to proceed with 0.0.8 and accepted the unresolved findings from release run `release-nqBQg0`; this is a release exception, not a passing acceptance result. Historical version records and gate results remain unchanged.
+- Known unresolved issues: M06's hook reports a generic integration-repair instruction when a reused requestId changes its prompt, rather than exposing `REQUEST_ID_CONFLICT`; M12's idle background-thread `set_permissions` can become permanently `OUTCOME_UNKNOWN`; preflight-rejected dispatch/followup notifications remain `awaiting_receipt`; post-archive sidebar refresh has not been manually confirmed for this release run.
+- N02–N04 and M13 remain incomplete. M06 and M12 failed. Automated checks do not substitute for these live acceptance cases.
+- Reported live passes in that run: background creation, dispatch, followup, stop and busy rejection; native idle-session wakeup; the original background owner remained retained more than 700 seconds after completion, then `codex_archive` succeeded with `route:background-owner` and the owning processes were released. This release task records those supplied observations without claiming a new live acceptance run or UI confirmation.
+- Earlier publication attempt stopped before commit/tag/push: `npm run check` exited 0; `npm test` exited 1 (92 tests, 80 passed, 12 failed; Unix socket listeners were denied with `listen EPERM` in the execution sandbox). The remaining three required checks were not run, as requested on failure. No release was published.
+- Final local release checks on 2026-11-06: `npm run check`, `npm test` (120 passed, zero failed/skipped), `git diff --check`, `node scripts/verify-lifecycle.mjs`, `node scripts/verify-retained-owner.mjs`, and `npm pack --dry-run` all passed. The real-server scripts used isolated temporary state without model turns or existing user chats. The earlier Unix socket sandbox failure did not recur. These results do not open the full acceptance gate.
+- Release scope: retained background owners, authenticated original-owner archival and explicit idle handoff; stored-history status; lifecycle regression tests and maintained acceptance tooling. Permanent deletion and direct desktop-held archival remain unsupported. Private transcripts, fixture identities and evidence stay outside the release.
+
+发布例外：所有者明确接受 `release-nqBQg0` 的未解决问题，选择照常发布 0.0.8；发布验收门禁仍为 **CLOSED**。M06 的 hook 将复用 requestId 修改 prompt 的冲突显示为集成修复提示，而非 `REQUEST_ID_CONFLICT`；M12 的空闲后台线程权限设置可永久停留 `OUTCOME_UNKNOWN`；预检拒绝的 dispatch/followup 通知仍为 `awaiting_receipt`；本轮归档后侧栏刷新未经人工确认。N02–N04、M13 未完成。该轮已实测后台创建、派发、followup、stop、忙碌拒绝及原生空闲唤醒；原后台 owner 在完成 700 秒以上仍保留，之后通过 `route:background-owner` 归档成功并释放进程。本次仅如实记录已提供的实测结果，不将本地检查或历史界面观察算作新的完整验收通过。
+
+## Version 0.0.8-local.5 retained-owner lifecycle (2026-11-06, unpublished)
+
+- Added private authenticated control routing to the original background owner; idle archive is serialized with follower mutations and durably journaled. ACK precedes genuine archive notifications and connection/socket/slot release.
+- Replaced the completion shutdown timer with explicit archive/handoff retention and eight-owner admission per state root. Plugin reload reconnects to retained owners; crashes and desktop takeover are not automatically recovered.
+- Added fault, concurrency, replay, pending-input, rejection, notification failure and admission checks, plus a real isolated-backend lifecycle verification script. Full Claude and native UI acceptance remain separate gates. No publication is authorized.
+- Updated acceptance to `archive-retained-owner-v2`; historical deletion/writerless reports cannot substitute for a new actual Claude retained-owner archive.
+- Installed-plugin checkpoint passed through actual Magpie calls: retained original background ownership beyond 60 seconds/across caller reload, owner-routed archive ACK, post-ACK notification, independent archived/history/resource checks, and user confirmation “已自动消失”. Both local API/UI fixtures are archived. This is Codex-through-Magpie evidence; fresh genuine Claude/full acceptance remains required. See [implementation and validation procedure](background-owned-thread-lifecycle.md).
+
+## Version 0.0.8-local.4 native audit and scope reduction (2026-11-05, unpublished)
+
+- Final independent native-pipe probe used Magpie's Bun 1.4.4 executable and only `tools/list`; the matching desktop log recorded `untrusted-code-signing-identity`. A second read-only probe inside the actual Magpie plugin host received `EPIPE`, with a matching `untrusted-process-ancestry` rejection on the current desktop socket. The temporary diagnostic tool was removed. Fresh packaged follower/schema inspection found no independently callable archive or release request. No mutation, impersonation or authorization bypass was attempted.
+- Reduced the public catalog to 13 tools: only unattached persisted-thread archival remains. Held roots/descendants return `owner_action_required` without submission or timed retry advice. Permanent deletion is removed from the catalog and RPC mutation allowlist; historical deletion receipts remain readable but retired.
+- Updated the acceptance contract to `archive-unattached-v1`. At least one actual Claude-to-Magpie archive remains mandatory. Manual native archive of unsupported held fixtures is explicitly separate, needs operator/boundary evidence and cannot replace integration success. Any active/unknown residual fixture still blocks cleanup.
+- A subsequent installed-plugin check found four previously authorized residual QA chats naturally writerless. Codex called the actual Magpie `codex_archive` tool for all four; each returned server acknowledgment. Independent active/archived listings confirmed all four archived, history stayed readable, and a same-ID replay returned the historical receipt. This is live Codex-through-Magpie evidence, not a fresh Claude run or a desktop-held archive test. Sidebar appearance was not observed.
+- Earlier failed release runs remain unchanged. This scope decision does not resolve the open permission, hook-conflict or native-notification findings and does not authorize a release.
+
+## Version 0.0.8-local.3 withdrawal (2026-11-05, unpublished)
+
+- Removed the shared-owner control transport, dependency, dedicated tests and startup helper from the local plugin. It cannot guarantee shared ownership across ordinary desktop restarts and is not an accepted solution.
+- Retained earlier stored-history status fixes, loaded-plugin identity, maintained acceptance framework, and the real independent-server boundary probe.
+- The unused experiment-only daemon was stopped after checking that it had no loaded threads and differed from the desktop writer. No desktop restart or global startup-environment change was performed.
+- Local `0.0.8-local.2` did pass isolated same-backend deletion/native-notification checks, but real desktop-held deletion/sidebar acceptance was never completed. Preserve that as historical protocol evidence only; it does not open any release gate.
+- Maintain verified app-server/IPC capabilities and rejected approaches in [the capability record](app-server-capabilities.md).
+
+## Version 0.0.8-local.1 unloaded status (2026-11-05, unpublished)
+
+- Reproduced desktop owner-discovery timeout for persisted `notLoaded` threads with no writer, while initialization and loaded-thread snapshots responded normally. Unloaded status now bypasses owner discovery and reads persisted history without resume or mutations.
+- Isolated real AppServer check created/named an empty persisted thread, exited its writer, and read status successfully: `historyOnly: true`, `runtimeStatus: notLoaded`, `status: unknown`, no turns. Existing user threads were not modified.
+- Regression coverage includes exact-turn pagination, missing/empty history, stale in-progress history, output bounds, bounded history traversal, writer attachment during reads, and propagation of unavailable history without substituting stale completion results.
 
 ## Version 0.0.7 lifecycle diagnostics (2026-11-05)
 

@@ -5,23 +5,27 @@ import { Operations, digest, requestKey } from './operations.js';
 import { acquireFileLock } from './locks.js';
 import { validateThread, writerPids, desktopState } from './ownership.js';
 import { DispatchError } from './errors.js';
-
-const sourceKinds = ['cli', 'vscode', 'exec', 'appServer', 'subAgent', 'subAgentReview',
-  'subAgentCompact', 'subAgentThreadSpawn', 'subAgentOther', 'unknown'];
+import { archiveSubtree } from './archive-scope.js';
+import { retainedOwner, requestOwner, readOwnerOutcome } from './owner-control.js';
 
 export function createLifecycle({ stateDirectory = join(homedir(), '.local', 'state', 'magpie-codex-dispatch'),
-  server = withServer, writers = writerPids, inspect = desktopState, socketPath } = {}) {
+  server = withServer, writers = writerPids, inspect = desktopState, socketPath,
+  findOwner = retainedOwner, ownerRequest = requestOwner } = {}) {
   const store = new Operations(stateDirectory);
   return async (operation, args, { abort } = {}) => {
-    if (!['archive', 'delete'].includes(operation)) throw new DispatchError('INVALID_ARGUMENT', 'Unknown lifecycle operation.');
+    if (operation !== 'archive') throw new DispatchError('UNSUPPORTED_OPERATION', 'Only archive is supported; permanent deletion has been removed.');
     validateThread(args.threadId); requestKey(args.requestId);
     return store.locked(args.requestId, async () => {
       const fingerprint = digest(JSON.stringify([operation, args.threadId.toLowerCase()]));
       const old = await store.read(args.requestId);
       if (old) {
         if (old.fingerprint !== fingerprint) throw new DispatchError('REQUEST_ID_CONFLICT', 'This requestId belongs to different arguments.');
-        if (!['preparing', 'waiting_writer_release', 'preflight_failed'].includes(old.phase)) {
+        if (!['preparing', 'waiting_writer_release', 'owner_action_required', 'preflight_failed'].includes(old.phase)) {
           const { fingerprint: _, ...result } = old;
+          if (old.route === 'background-owner') {
+            const ownerResult = await readOwnerOutcome(stateDirectory, args);
+            if (ownerResult) return { ...result, ...ownerResult, replayed: true };
+          }
           return { ...result, replayed: true };
         }
       }
@@ -34,28 +38,16 @@ export function createLifecycle({ stateDirectory = join(homedir(), '.local', 'st
       try {
         await save();
         return await server({ signal: abort, lifecycle: true, onNotification: m => {
-          if (m.method === `thread/${operation === 'archive' ? 'archived' : 'deleted'}` && m.params?.threadId) affected.add(m.params.threadId);
+          if (m.method === 'thread/archived' && m.params?.threadId) affected.add(m.params.threadId);
         } }, async client => {
           state.stage = 'read_target';
           const { thread } = await client.request('thread/read', { threadId: args.threadId, includeTurns: false });
           if (thread?.id !== args.threadId || thread.ephemeral !== false) throw new DispatchError('INVALID_TARGET', 'A persisted thread is required.');
-          // Both operations cascade to spawned descendants. Include all source kinds and both archive states.
-          const ids = new Set([args.threadId]);
+          // Archiving cascades to spawned descendants. Include all source kinds and both archive states.
           state.stage = 'list_descendants';
-          for (const archived of [false, true]) {
-            let cursor = null;
-            const seen = new Set();
-            do {
-              const page = await client.request('thread/list', { ancestorThreadId: args.threadId, archived, sourceKinds, limit: 100, cursor });
-              if (!Array.isArray(page.data)) throw new DispatchError('INVALID_RPC_RESPONSE', 'Cannot inspect descendant threads.');
-              for (const child of page.data) { validateThread(child.id); ids.add(child.id); }
-              cursor = page.nextCursor;
-              if (cursor && seen.has(cursor) || ids.size > 1000) throw new DispatchError('SCOPE_TOO_LARGE', 'Cannot safely enumerate descendant threads.');
-              seen.add(cursor);
-            } while (cursor);
-          }
+          const ids = await archiveSubtree(client, args.threadId);
           state.stage = 'check_writers';
-          const heldThreads = [];
+          const heldThreads = []; let backgroundOwner;
           for (const id of [...ids].sort()) {
             unlocks.push(await acquireFileLock(join(stateDirectory, `thread-${digest(id.toLowerCase())}.mutex`), { signal: abort }));
             if (!(await writers(id)).length) continue;
@@ -70,23 +62,46 @@ export function createLifecycle({ stateDirectory = join(homedir(), '.local', 'st
               state.blockingThreadId = id;
               throw new DispatchError('THREAD_ACTIVE', 'The target or a descendant is running or awaiting input. No lifecycle request was submitted.');
             }
+            if (id === args.threadId && owner.owner === 'background') {
+              backgroundOwner = await findOwner(stateDirectory, id, writers);
+              if (backgroundOwner) continue;
+            }
             heldThreads.push({ threadId: id, owner: owner.owner,
               reason: owner.runtimeStatus === 'idle' && owner.pendingRequests === 0 &&
                 (owner.turnFound === false || ['completed', 'failed', 'interrupted'].includes(owner.status))
-                ? 'IDLE_OWNER_MUST_UNLOAD' : 'OWNERSHIP_UNCONFIRMED' });
+                ? 'OWNER_ARCHIVE_REQUIRED' : 'OWNERSHIP_UNCONFIRMED' });
           }
           if (heldThreads.length) {
-            Object.assign(state, { phase: 'waiting_writer_release', submitted: false, heldThreads,
-              retrySameRequestId: true, retryAfterMs: 5000,
-              reason: 'The owner must unload these threads. Desktop follower IPC has no archive/delete command; no request was submitted and nothing will execute automatically.' });
+            Object.assign(state, { phase: 'owner_action_required', submitted: false, supported: false, heldThreads,
+              actionRequired: 'archive_in_owner', automaticRetry: false,
+              retrySameRequestId: true, retryOnlyAfter: 'confirmed_writer_release',
+              reason: 'Archiving held threads is outside this plugin scope. Archive in the owning desktop/client, or retry this request only after confirmed natural writer release. No mutation was submitted; do not poll or restart the app.' });
             await save();
             return publicResult();
+          }
+          if (backgroundOwner) {
+            Object.assign(state, { route: 'background-owner', ownerGeneration: backgroundOwner.generation,
+              phase: 'outcome_unknown', stage: 'route_owner', submitted: true });
+            await save(); submitted = true;
+            try {
+              const response = await ownerRequest(backgroundOwner, 'archive', { ...args, expectedThreadIds: ids }, { signal: abort });
+              Object.assign(state, response); await save();
+              return publicResult();
+            } catch (e) {
+              const receipt = await readOwnerOutcome(stateDirectory, args);
+              if (receipt && receipt.phase !== 'preparing') {
+                Object.assign(state, receipt); await save();
+                if (receipt.phase === 'preflight_failed') { submitted = false; throw new DispatchError(receipt.errorCode, 'Owner preflight refused archival. Nothing was submitted.'); }
+                return publicResult();
+              }
+              throw e;
+            }
           }
           // Persist intent before delivery. An ambiguous outcome must never trigger an automatic resend.
           Object.assign(state, { phase: 'outcome_unknown', stage: 'submit', submitted: true });
           await save(); submitted = true;
-          await client.request(`thread/${operation}`, { threadId: args.threadId });
-          Object.assign(state, { phase: operation === 'archive' ? 'archived' : 'deleted', completed: true,
+          await client.request('thread/archive', { threadId: args.threadId });
+          Object.assign(state, { phase: 'archived', completed: true,
             serverAcknowledged: true, affectedThreadIds: [...affected],
             includesSpawnedDescendants: true });
           await save();

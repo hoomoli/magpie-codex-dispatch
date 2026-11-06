@@ -10,6 +10,8 @@ import { backgroundDirectory } from './background.js';
 import { permissionSettings, requestedMode, assertPermissions } from './permissions.js';
 import { summarize } from './desktop.js';
 import { Journal } from './dispatch.js';
+import { reserveOwnerSlot, serveOwner } from './owner-control.js';
+import { createOwnerLifecycle } from './owner-lifecycle.js';
 
 const inputPath = process.argv[2];
 const info = await lstat(inputPath);
@@ -18,7 +20,7 @@ const { args, project, stateDirectory, socketPath } = JSON.parse(await readFile(
 const directory = backgroundDirectory(stateDirectory), store = new Operations(directory);
 const unlock = await acquireFileLock(join(directory, `${requestKey(args.requestId)}.worker.mutex`));
 await rm(inputPath);
-let operation = await store.read(args.requestId), ipc, reconnectTimer, idleTimer, closing = false, submitted = false;
+let operation = await store.read(args.requestId), ipc, control, releaseSlot, reconnectTimer, closing = false, submitted = false;
 let persistQueue = Promise.resolve();
 function save(patch) { operation = { ...operation, ...patch }; const copy = { ...operation }; persistQueue = persistQueue.then(() => store.save(args.requestId, copy)); return persistQueue; }
 async function cache(snapshot) {
@@ -26,12 +28,11 @@ async function cache(snapshot) {
   await atomicJSON(join(directory, `thread-${result.threadId}.json`), result);
 }
 const runtime = new BackgroundRuntime({ rpc: null,
-  publish: snapshot => { if (snapshot.state.turns.at(-1)?.status === 'inProgress') clearTimeout(idleTimer); try { ipc?.publish(); } catch { ipc?.close(); reconnect(); } },
+  publish: () => { try { ipc?.publish(); } catch { ipc?.close(); reconnect(); } },
   onComplete: snapshot => {
     const terminal = summarize(snapshot);
     persistQueue = persistQueue.then(() => cache(terminal));
-    // Keep a terminal owner briefly so late completion subscribers can attach.
-    clearTimeout(idleTimer); idleTimer = setTimeout(shutdown, 60000);
+    // Ownership is retained until explicit archive or idle handoff, not a completion timer.
   }, onUnsupported: () => { void save({ lastError: 'UNSUPPORTED_BACKGROUND_REQUEST' }); } });
 const rpc = new AppServer({ execution: true, timeoutMs: 30000, onNotification: m => {
     runtime.notify(m);
@@ -60,13 +61,19 @@ async function fail(code) {
   await save({ phase: submitted ? 'outcome_unknown' : 'failed', lastError: code }).catch(() => {});
   await shutdown();
 }
-async function shutdown() {
-  if (closing) return; closing = true; clearTimeout(idleTimer); clearTimeout(reconnectTimer);
-  ipc?.close(); await rpc.close().catch(() => {}); await persistQueue.catch(() => {}); await unlock(); process.exit(0);
+async function shutdown(reason = 'owner_stopped') {
+  if (closing) return; closing = true; clearTimeout(reconnectTimer);
+  runtime.lifecycleBlocked = true;
+  await runtime.mutation.catch(() => {});
+  await control?.close().catch(() => {});
+  ipc?.close(); await rpc.close().catch(() => {});
+  await save({ owner: 'released', ownershipState: reason }).catch(() => {});
+  await persistQueue.catch(() => {}); await releaseSlot?.(); await unlock(); process.exit(0);
 }
-process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
+process.on('SIGTERM', () => { void shutdown('owner_stopped'); }); process.on('SIGINT', () => { void shutdown('owner_stopped'); });
 try {
   await save({ phase: 'creating', workerPid: process.pid });
+  releaseSlot = await reserveOwnerSlot(directory);
   await rpc.start({ cwd: project.cwd });
   const settings = permissionSettings(requestedMode(args));
   let result = await rpc.request('thread/start', { cwd: project.cwd, projectId: project.projectId,
@@ -82,11 +89,22 @@ try {
   runtime.initialize(result, args.title ?? 'Magpie task');
   const permissions = assertPermissions(runtime.state, requestedMode(args));
   await connect(); // Never launch invisible work if the desktop protocol cannot initialize.
+  const handle = createOwnerLifecycle({ root: stateDirectory, runtime, serverPid: rpc.child.pid,
+    announce: ids => ipc.archived(ids) });
+  control = await serveOwner({ root: stateDirectory, threadId, serverPid: rpc.child.pid,
+    handle: (command, args) => command === 'status' ? {
+      retained: !closing, workerPid: process.pid, serverPid: rpc.child.pid,
+      followerCount: ipc?.followers.size ?? 0, lifecycleBlocked: !!runtime.lifecycleBlocked,
+      retention: 'until-archive-or-handoff' } : handle(command, args),
+    afterReply: receipt => {
+      if (receipt.phase === 'archived' || receipt.phase === 'release_accepted') return shutdown(receipt.phase);
+    } });
   await save({ phase: 'submitting', owner: 'background' });
   submitted = true;
   const turn = await runtime.start({ threadId, input: [{ type: 'text', text: args.prompt, text_elements: [] }], ...settings });
   const receipt = { accepted: true, completed: false, requestId: args.requestId, threadId, turnId: turn.turn.id,
-    owner: 'background', permissions, threadUrl: `codex://threads/${threadId}` };
+    owner: 'background', retention: 'until-archive-or-handoff', ownerControlVersion: 1,
+    permissions, threadUrl: `codex://threads/${threadId}` };
   await save({ ...receipt, phase: 'accepted' });
   // Compatible durable receipt for the existing completion channel's crash recovery.
   const journal = new Journal(stateDirectory);

@@ -2,10 +2,11 @@ import { createDispatcher } from './dispatch.js';
 import { createFlows } from './flows.js';
 import { permissionModes } from './permissions.js';
 import { DispatchError } from './desktop.js';
-import { pluginName, pluginVersion, loadedAt } from './version.js';
+import { pluginName, pluginVersion, loadedAt, moduleUrl } from './version.js';
 import { createLifecycle } from './lifecycle.js';
+import { ownerLimit } from './owner-control.js';
 
-const threadId = { type: 'string', description: 'UUID of an existing, open local Codex desktop thread.' };
+const threadId = { type: 'string', description: 'UUID of an existing local Codex thread. Archive supports a verified retained plugin owner or a writerless persisted subtree; other held threads require owner action.' };
 const turnId = { type: 'string', description: 'Turn ID returned by dispatch or status.' };
 const requestId = { type: 'string', minLength: 8, maxLength: 128, description: 'Unique command ID. Reuse the same ID and arguments on retries; never automatically retry an unknown outcome with a new ID.' };
 const permissionMode = { type: 'string', enum: permissionModes, description: 'Default inherit: preserve existing thread settings or backend defaults for new background threads; does not copy another desktop chat. Use auto-review for a workspace-write sandbox with on-request approvals routed to Codex auto_review; the reviewer may approve or deny eligible requests. Use full-access only when the user explicitly authorized unrestricted filesystem/network access without shell approval prompts. Explicit modes are applied to the idle native thread and verified before dispatch.' };
@@ -21,10 +22,13 @@ export default async function MagpieCodexDispatch() {
     args: { type: 'object', properties, required, additionalProperties: false },
     async execute(args, context) {
       try {
-        if (operation === 'plugin_info') return JSON.stringify({ name: pluginName, pluginVersion, loadedAt });
+        if (operation === 'plugin_info') return JSON.stringify({ name: pluginName, pluginVersion, loadedAt, moduleUrl,
+          lifecycle: { archiveScope: 'background-owner-or-unattached', backgroundOwnerArchive: true, desktopHeldArchive: false,
+            backgroundRetention: 'until-archive-or-handoff', maxBackgroundOwners: ownerLimit,
+            permanentDelete: false, sidebarRefresh: 'notification-after-ack' } });
         const deadline = AbortSignal.timeout(45000);
         const abort = context?.abort ? AbortSignal.any([context.abort, deadline]) : deadline;
-        const executor = ['archive', 'delete'].includes(operation) ? lifecycle : ['status', 'dispatch', 'followup', 'stop', 'permissions'].includes(operation) ? run : flows;
+        const executor = operation === 'archive' ? lifecycle : ['status', 'dispatch', 'followup', 'stop', 'permissions'].includes(operation) ? run : flows;
         return JSON.stringify({ ...await executor(operation, args, { ...context, abort }), pluginVersion });
       }
       catch (error) {
@@ -35,8 +39,7 @@ export default async function MagpieCodexDispatch() {
     },
   });
   return { tool: {
-    codex_archive: define('archive', 'Archive a persisted thread and attempt to archive spawned descendants. Active/awaiting-input threads fail with THREAD_ACTIVE. Idle or unconfirmed owners return completed:false, phase:waiting_writer_release; the owner must unload, then retry the SAME requestId. No automatic execution, interruption or forced release. Only completed:true means server acknowledgment; affectedThreadIds may be incomplete.', { threadId, requestId }, ['threadId', 'requestId']),
-    codex_delete: define('delete', 'Permanently delete a persisted active/archived thread AND spawned descendants only when explicitly requested by the user. Active/awaiting-input threads fail with THREAD_ACTIVE; held idle/unknown threads return completed:false, phase:waiting_writer_release, never success. Wait for owner unload and retry the SAME requestId. Does not interrupt or force release. THREAD_UNAVAILABLE is not proof of deletion. Inspect unknown outcomes; never resend with a new ID.', { threadId, requestId }, ['threadId', 'requestId']),
+    codex_archive: define('archive', 'Archive an idle persisted thread through its verified retained plugin background owner, or archive a writerless persisted subtree. Active/awaiting-input threads and held descendants are refused. Desktop-held or unconfirmed owners return owner_action_required without submission; never force release or restart apps. Fixed request IDs are durable and idempotent; unknown outcomes are never automatically resubmitted. completed:true confirms server ACK; desktopNotified confirms the real notification was written after ACK, not visual observation. Permanent deletion is not offered.', { threadId, requestId }, ['threadId', 'requestId']),
     codex_plugin_info: define('plugin_info', `Report the loaded ${pluginName} v${pluginVersion} and module load time. No desktop connection or task execution. Use this to verify a plugin reload.`, {}, []),
     codex_projects: define('projects', 'List canonical Codex project IDs and workspace roots. Use these IDs rather than desktop UI project IDs.', {}, []),
     codex_create_task: define('create', 'Create and execute a task in the background in the selected project or cwd. Refresh the ordinary desktop sidebar without navigating or pinning. The desktop follows live progress when viewed. No manual opening is required to start execution. Reuse identical arguments and requestId after an uncertain outcome. Acceptance is not completion.', {
@@ -48,13 +51,13 @@ export default async function MagpieCodexDispatch() {
       sandbox: { type: 'string', enum: ['read-only', 'workspace-write'], description: 'Legacy alias: read-only or workspace-write/on-request. Prefer permissionMode; conflicting values are rejected.' },
     }, ['requestId', 'prompt']),
     codex_ownership: define('ownership', 'Inspect native desktop ownership and local writer holders. Does not release or execute anything.', { threadId }, ['threadId']),
-    codex_handoff: define('handoff', 'Transfer an idle Codex Companion thread to native Codex Desktop. The source must stop submitting to this thread first. Never interrupts active work, deletes Codex locks, or kills shared brokers. Pending release can take over a minute: retry identical arguments and requestId.', {
+    codex_handoff: define('handoff', 'Transfer an idle retained plugin background thread or Codex Companion thread to native Codex Desktop. Explicit handoff releases the idle source; it is no longer retained for background-owner archival. Stop source submissions first. Never interrupts active work, deletes locks, or kills brokers. Retry pending handoff with identical arguments and requestId.', {
       threadId, requestId, sourceEndpoint: { type: 'string', description: 'Optional unix: endpoint; must match the actual writer broker. Otherwise discovered safely.' },
     }, ['threadId', 'requestId']),
     codex_recover_creation: define('recover_creation', 'Bind a known thread ID to an uncertain create operation only after verifying its unique source marker, cwd and project. For empty threads omitted from lists. Does not dispatch; retry the original create arguments afterward.', { requestId, threadId }, ['requestId', 'threadId']),
-    codex_operation_status: define('operation_status', 'Read persisted create/handoff progress without advancing it. For current execution, use codex_status with threadId and turnId.', { requestId }, ['requestId']),
+    codex_operation_status: define('operation_status', 'Read persisted create/handoff/archive progress and retired deletion receipts without advancing them. Held archival requires owner action, not timed polling. For current execution, use codex_status with threadId and turnId.', { requestId }, ['requestId']),
     codex_set_permissions: define('permissions', 'Apply an explicitly user-authorized permission mode to an idle native desktop thread and verify next-turn settings. Does not start a task. Refuses active threads; full-access requires explicit user authorization.', { threadId, requestId, permissionMode: { ...permissionMode, enum: permissionModes.filter(mode => mode !== 'inherit'), description: 'Explicit user-authorized mode for this idle thread. Full Access requires explicit authorization for unrestricted filesystem/network access without shell approvals.' } }, ['threadId', 'requestId', 'permissionMode']),
-    codex_status: define('status', 'Read a fresh desktop snapshot. Unknown or missing history is never reported as success. Returns at most 16000 characters of assistant output.', { threadId, turnId }, ['threadId']),
+    codex_status: define('status', 'Read live desktop state for a held thread, or persisted history without loading an unattached thread. historyOnly:true / runtimeStatus:notLoaded is stored history, not live execution state. Missing history is never success. At most 16000 output characters; requested old turns use bounded pagination.', { threadId, turnId }, ['threadId']),
     codex_dispatch: define('dispatch', 'Start a task in an existing idle Codex desktop thread. The app renders execution live. Acceptance is not completion. Does not create a thread or another server.', { threadId, prompt, requestId, permissionMode }, ['threadId', 'prompt', 'requestId']),
     codex_followup: define('followup', 'Steer an active Codex desktop turn. Checks turnId before sending; the private steer protocol has no atomic expected-turn guard. For an idle thread, use codex_dispatch.', { threadId, turnId, prompt, requestId }, ['threadId', 'turnId', 'prompt', 'requestId']),
     codex_stop: define('stop', 'Request cancellation of the specified active turn using an atomic expectedTurnId guard. Check status to confirm interruption.', { threadId, turnId, requestId }, ['threadId', 'turnId', 'requestId']),

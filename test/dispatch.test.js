@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
-import { mkdtemp, rm, writeFile, chmod, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, chmod, readFile, mkdir, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createDispatcher, Journal } from '../src/dispatch.js';
@@ -71,7 +71,7 @@ async function fixture(t, options = {}) {
     await new Promise(resolve => server.close(resolve));
     await rm(directory, { recursive: true, force: true });
   });
-  const settings = { socketPath, stateDirectory: join(directory, 'receipts'), timeoutMs: 200 };
+  const settings = { socketPath, stateDirectory: join(directory, 'receipts'), timeoutMs: 200, writers: async () => [process.pid] };
   return { calls, settings, directory, run: createDispatcher(settings) };
 }
 const mutations = calls => calls.filter(call => /follower/.test(call.method));
@@ -217,11 +217,12 @@ test('unknown history is not success and assistant output is bounded', () => {
 
 test('plugin exposes serializable tool definitions and validates mutation input', async () => {
   const { tool } = await plugin();
-  assert.equal(Object.keys(tool).length, 14);
+  assert.equal(Object.keys(tool).length, 13);
+  assert.equal(tool.codex_delete, undefined);
   for (const definition of Object.values(tool)) {
     assert.equal(JSON.parse(JSON.stringify(definition.args)).type, 'object');
   }
-  for (const name of ['codex_dispatch', 'codex_followup', 'codex_stop', 'codex_create_task', 'codex_handoff', 'codex_archive', 'codex_delete']) {
+  for (const name of ['codex_dispatch', 'codex_followup', 'codex_stop', 'codex_create_task', 'codex_handoff', 'codex_archive']) {
     await assert.rejects(tool[name].execute({ threadId: 'invalid' }), /INVALID_ARGUMENT/);
   }
 });
@@ -241,11 +242,25 @@ test('plugin info and status report the loaded package version without starting 
   const info = JSON.parse(await tool.codex_plugin_info.execute({}));
   assert.equal(info.name, metadata.name);
   assert.equal(info.pluginVersion, metadata.version);
+  assert.deepEqual(info.lifecycle, { archiveScope: 'background-owner-or-unattached', backgroundOwnerArchive: true,
+    desktopHeldArchive: false, backgroundRetention: 'until-archive-or-handoff', maxBackgroundOwners: 8,
+    permanentDelete: false, sidebarRefresh: 'notification-after-ack' });
   assert.equal(metadata.magpie.name, metadata.name);
   assert.ok(Number.isFinite(Date.parse(info.loadedAt)));
   assert.match(tool.codex_plugin_info.description, new RegExp(`v${metadata.version.replaceAll('.', '\\.')}`));
   assert.equal(f.calls.length, 0);
-  const status = JSON.parse(await tool.codex_status.execute({ threadId }));
+  const oldHome = process.env.CODEX_HOME;
+  const home = join(f.directory, 'codex-home');
+  await mkdir(join(home, 'thread-writer-locks'), { recursive: true });
+  const holder = await open(join(home, 'thread-writer-locks', `${threadId}.lock`), 'w');
+  let status;
+  try {
+    process.env.CODEX_HOME = home;
+    status = JSON.parse(await tool.codex_status.execute({ threadId }));
+  } finally {
+    await holder.close();
+    if (oldHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = oldHome;
+  }
   assert.equal(status.pluginVersion, info.pluginVersion);
   assert.equal(mutations(f.calls).length, 0);
   assert.deepEqual(JSON.parse(await tool.codex_plugin_info.execute({})), info);

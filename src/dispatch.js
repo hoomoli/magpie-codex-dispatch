@@ -6,6 +6,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Desktop, DispatchError, summarize } from './desktop.js';
 import { acquireFileLock } from './locks.js';
+import { writerPids } from './ownership.js';
+import { storedStatus } from './stored-status.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -70,7 +72,8 @@ export class Journal {
 }
 
 export function createDispatcher({ socketPath, stateDirectory = join(homedir(), '.local', 'state', 'magpie-codex-dispatch'),
-  timeoutMs = 8000, desktopFactory = options => new Desktop(options) } = {}) {
+  timeoutMs = 8000, desktopFactory = options => new Desktop(options), writers = writerPids,
+  readStored = storedStatus } = {}) {
   const journal = new Journal(stateDirectory);
   return async function execute(operation, args, { abort } = {}) {
     validate(operation, args);
@@ -78,7 +81,14 @@ export function createDispatcher({ socketPath, stateDirectory = join(homedir(), 
     let submitted = false;
     let unlock;
     let desktop;
+    let readingStored = false;
     try {
+      if (operation === 'status' && !(await writers(args.threadId)).length) {
+        readingStored = true;
+        try { return await readStored(args, { signal: abort, writers }); }
+        catch (error) { if (error.code !== 'WRITER_CHANGED') throw error; }
+        readingStored = false;
+      }
       if (operation !== 'status') {
         const values = [operation, args.threadId, args.turnId ?? null, args.prompt ?? null];
         if (args.permissionMode !== undefined && args.permissionMode !== 'inherit') values.push(args.permissionMode);
@@ -152,7 +162,7 @@ export function createDispatcher({ socketPath, stateDirectory = join(homedir(), 
       await journal.finish(claim, receipt);
       return receipt;
     } catch (error) {
-      if (operation === 'status') {
+      if (operation === 'status' && !readingStored) {
         const terminal = await terminalBackgroundState(stateDirectory, args.threadId, args.turnId);
         if (terminal) return { ...terminal, source: 'durable-background-result' };
       }

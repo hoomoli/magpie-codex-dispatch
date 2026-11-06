@@ -1,6 +1,6 @@
 {
   "name": "magpie-codex-dispatch",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "magpie": {
     "name": "magpie-codex-dispatch"
   },
@@ -18,7 +18,11 @@
   "scripts": {
     "test": "node --test",
     "check": "node scripts/check.mjs",
-    "probe": "node scripts/probe.mjs"
+    "probe": "node scripts/probe.mjs",
+    "acceptance:connect": "node scripts/acceptance.mjs --profile connect",
+    "acceptance:release": "node scripts/acceptance.mjs --profile release",
+    "acceptance:check": "node scripts/acceptance-gate.mjs",
+    "acceptance:release:check": "node scripts/acceptance-gate.mjs --require-profile release"
   },
   "engines": {
     "node": ">=22"
