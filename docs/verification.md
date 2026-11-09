@@ -2,6 +2,14 @@
 
 # Verification / 验收记录
 
+## Version 0.0.9 (2026-11-09)
+
+- The owner requested publication of the follow-up notification fix and an update of the installed Magpie plugin. The full release acceptance gate remains **CLOSED**; this patch does not claim a new complete Claude/UI acceptance pass or resolution of unrelated 0.0.8 findings.
+- Reproduced a real Claude follow-up rejected for missing `turnId`, followed by a corrected retry blocked by the notification fingerprint reserved for the invalid request. Follow-ups now validate before registration. Only an exact legacy unaccepted binding missing `turnId` can recover with otherwise identical arguments; accepted bindings and other argument changes remain immutable.
+- Existing pre-fix notification workers remain usable without interrupting native watchers. The hook can reuse only the exact unaccepted legacy binding; it does not dispatch the malformed request. Missing arguments and saved-argument conflicts now have distinct diagnostics.
+- Replayed the actual failed request through the configured native PreToolUse hook with the corrected parameters: exit 0 and binding context returned. This check did not send a follow-up, change task scope, or claim a fresh native completion wakeup.
+- Final release validation: syntax checks, all 124 automated tests (zero failures/skips), whitespace checks, both real isolated AppServer lifecycle scripts, and `npm pack --dry-run` passed after version/documentation updates. Existing permission, lifecycle/UI, and other preflight-failure findings remain open.
+
 ## Version 0.0.8 (2026-11-06)
 
 - Publication was explicitly authorized by the owner despite the release acceptance gate remaining **CLOSED**. The owner chose to proceed with 0.0.8 and accepted the unresolved findings from release run `release-nqBQg0`; this is a release exception, not a passing acceptance result. Historical version records and gate results remain unchanged.

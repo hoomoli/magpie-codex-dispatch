@@ -1,6 +1,22 @@
 #!/usr/bin/env node
 import { workerRequest } from './hook-client.js';
 import { hash } from './channel-store.js';
+import { validate } from './dispatch.js';
+
+async function register(sessionId, name, input, request) {
+  if (name === 'codex_followup') validate('followup', input);
+  try { return await request(sessionId, 'hook_register', { name, input }); }
+  catch (error) {
+    // Keep existing native watchers connected to pre-fix workers. Reusing the
+    // exact invalid legacy fingerprint only binds monitoring; it never sends
+    // the malformed input to Codex. New workers migrate it directly instead.
+    if (name !== 'codex_followup' || error.message !== 'REQUEST_ID_CONFLICT: notification binding differs.') throw error;
+    const status = await request(sessionId, 'status');
+    if (!status.tasks?.some(t => t.requestId === input.requestId && t.state === 'awaiting_receipt')) throw error;
+    const { turnId, ...missingTurn } = input;
+    return request(sessionId, 'hook_register', { name, input: missingTurn });
+  }
+}
 
 export function dispatchName(name) {
   if (typeof name !== 'string' || !/^mcp__.*(?:magpie|codex-dispatch)/.test(name)) return null;
@@ -32,7 +48,7 @@ export async function runHook(input, request = workerRequest) {
     if (!name) return { code: 0 };
     const args = input.tool_input;
     if (!args || typeof args.requestId !== 'string') throw new Error('Missing dispatch requestId.');
-    const { key } = await request(sessionId, 'hook_register', { name, input: args });
+    const { key } = await register(sessionId, name, args, request);
     if (event === 'PreToolUse') return { code: 0, json: { hookSpecificOutput: { hookEventName: event,
       additionalContext: 'This Codex dispatch is automatically bound to this Claude session. After acceptance, finish your response; completion will wake this session for review. Do not poll status. Pending creation still requires retrying the same requestId.' } } };
     if (event !== 'PostToolUse') return { code: 0 };
@@ -56,10 +72,15 @@ async function main() {
     if (result.json) console.log(JSON.stringify(result.json));
     if (result.text) console.error(result.text);
     process.exitCode = result.code;
-  } catch {
+  } catch (error) {
     // Do not expose tool arguments or raw transport errors to hook logs.
     if (input.hook_event_name === 'PreToolUse') {
-      console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'Codex completion binding failed. No automatic notification was confirmed; repair the integration before dispatching.' } }));
+      const reason = error.code === 'INVALID_ARGUMENT'
+        ? `Codex request is invalid: ${error.message} Correct the arguments before retrying; no notification binding was reserved.`
+        : error.message === 'REQUEST_ID_CONFLICT: notification binding differs.'
+          ? 'Codex notification request ID conflicts with saved arguments. Inspect the exact request binding; this does not imply other task monitors have stopped.'
+          : 'Codex completion binding failed. No automatic notification was confirmed; repair the integration before dispatching.';
+      console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }));
     } else {
       console.error('Codex completion monitoring disconnected or failed. The saved request remains unresolved. Inspect codex_notification_status for this session; do not assume completion or resubmit the task.');
       process.exitCode = 2;

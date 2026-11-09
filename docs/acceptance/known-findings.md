@@ -2,6 +2,8 @@
 
 Current local contract (`0.0.8-local.5`): original retained plugin owners can receive authenticated archive requests and archive idle threads through their own connections; unattached archival remains supported. Desktop/unknown-held targets still require owner action. Retention lasts until explicit archive/handoff, with eight-owner admission per state root and no automatic crash takeover. Permanent deletion remains removed. Fresh acceptance uses `archive-retained-owner-v2` and must demonstrate genuine Claude-to-Magpie retained-owner archival; local Codex tests do not substitute. Historical failures/counts below remain unchanged. See [background lifecycle](../background-owned-thread-lifecycle.md).
 
+Version 0.0.9 fixes missing-turn follow-up registration and its exact legacy retry, and distinguishes hook argument/conflict diagnostics. The real failed request passed the repaired PreToolUse hook without dispatch; fresh full Claude acceptance of the broader findings below remains outstanding. Other preflight failures can still leave awaiting-receipt entries.
+
 These findings came from the first real-Claude run against local version `0.0.8-local.1` on 2026-11-05. They are regression requirements, not acceptance waivers. Private fixture IDs, transcripts and credentials stay outside the repository. The release gate remains CLOSED; a green automated suite alone does not close these findings.
 
 | Finding | Observation | Required regression evidence |

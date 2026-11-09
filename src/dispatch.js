@@ -12,7 +12,7 @@ import { storedStatus } from './stored-status.js';
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const hash = value => createHash('sha256').update(value).digest('hex');
 
-function validate(operation, args) {
+export function validate(operation, args) {
   if (!args || typeof args !== 'object' || Array.isArray(args) || (typeof args.threadId !== 'string' || !uuid.test(args.threadId))) {
     throw new DispatchError('INVALID_ARGUMENT', 'threadId must be a UUID copied from the target desktop thread.');
   }

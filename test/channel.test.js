@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { ChannelStore } from '../src/channel-store.js';
+import { ChannelStore, hash } from '../src/channel-store.js';
 import { CompletionMonitor } from '../src/channel-monitor.js';
 import { Desktop } from '../src/desktop.js';
 
@@ -41,6 +41,32 @@ test('bindings cannot change and concurrent queue updates are retained', async t
   await assert.rejects(store.register('codex_dispatch', { requestId: 'channel-request-1', prompt: 'changed' }), /CONFLICT/);
   await Promise.all(Array.from({ length: 10 }, (_, i) => store.register('codex_dispatch', { requestId: `request-${i}`, prompt: 'a' })));
   assert.equal(Object.keys(store.data.tasks).length, 11);
+});
+
+test('invalid follow-up cannot poison a request ID before a corrected retry', async t => {
+  const { store } = await fixture(t);
+  const args = { requestId: 'followup-invalid-1', threadId, prompt: 'Cancel item 5.' };
+  assert.throws(() => store.register('codex_followup', args), /turnId is required/);
+  assert.equal(store.data.tasks[hash(args.requestId)], undefined);
+  const key = await store.register('codex_followup', { ...args, turnId });
+  await store.accept(key, { accepted: true, threadId, turnId });
+  assert.equal(store.data.tasks[key].turnId, turnId);
+});
+
+test('legacy missing-turn follow-up binding can be repaired without weakening request identity', async t => {
+  const { dir, store } = await fixture(t);
+  const args = { requestId: 'followup-legacy-1', threadId, prompt: 'Cancel item 5.' };
+  const key = hash(args.requestId);
+  const fingerprint = hash(JSON.stringify(['codex_followup', Object.keys(args).sort().map(k => [k, args[k]])]));
+  await store.change(data => { data.tasks[key] = { key, name: 'codex_followup', requestId: args.requestId, fingerprint }; });
+  const recovered = new ChannelStore(dir); await recovered.init();
+  await assert.rejects(recovered.register('codex_followup', { ...args, turnId, prompt: 'Changed prompt' }), /CONFLICT/);
+  await assert.rejects(recovered.register('codex_followup', { ...args, turnId, threadId: '00000000-0000-4000-8000-000000000002' }), /CONFLICT/);
+  assert.equal(await recovered.register('codex_followup', { ...args, turnId }), key);
+  assert.equal(await recovered.register('codex_followup', { ...args, turnId }), key);
+  await assert.rejects(recovered.register('codex_followup', { ...args, turnId: 'different' }), /CONFLICT/);
+  await recovered.accept(key, { accepted: true, threadId, turnId });
+  await assert.rejects(recovered.register('codex_followup', { ...args, turnId: 'different' }), /CONFLICT/);
 });
 
 for (const status of ['completed','failed','interrupted']) test(`monitor reacts to ${status} without polling and ignores other turns`, async t => {

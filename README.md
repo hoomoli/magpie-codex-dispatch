@@ -2,7 +2,7 @@
 
 [中文说明](README.zh-CN.md) · [Ownership contract / 控制权规范](docs/ownership.md)
 
-Current release version: **0.0.8** — retained background execution, desktop follower streaming, event-driven Claude review, stored-history status, and archival through the original background owner or an unattached subtree. Permanent deletion and direct archival of desktop-owned chats remain outside the supported scope.
+Current release version: **0.0.9** — retained background execution, desktop follower streaming, event-driven Claude review, stored-history status, and archival through the original background owner or an unattached subtree. Permanent deletion and direct archival of desktop-owned chats remain outside the supported scope.
 
 The display name is `magpie-codex-dispatch`; the version belongs in Magpie’s separate version badge. Local-directory installs hide that badge, so use `codex_plugin_info` to verify their loaded version. Git-based installs also show a commit identifier managed by Magpie.
 
@@ -29,7 +29,7 @@ Claude / other MCP client
 
 New tasks execute in a detached worker using the app-bundled AppServer. The worker verifies effective permissions, publishes native follower snapshots, and forwards approvals and guarded interruptions. The desktop displays progress without a separate dashboard. Existing desktop-thread dispatch and explicit Companion handoff retain their native-owner path. No new task is opened or pinned automatically.
 
-Release acceptance remains **CLOSED**. The owner explicitly accepted the unresolved findings and authorized this release. All required local checks passed; see the [0.0.8 release record](docs/verification.md).
+Release acceptance remains **CLOSED**. The owner explicitly accepted the unresolved findings and authorized this release. All required local checks passed; see the [0.0.9 release record](docs/verification.md).
 
 ## Install and connect Claude
 

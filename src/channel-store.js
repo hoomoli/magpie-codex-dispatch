@@ -2,7 +2,7 @@ import { mkdir, open, readFile, rename, lstat } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { Journal } from './dispatch.js';
+import { Journal, validate } from './dispatch.js';
 
 export const hash = value => createHash('sha256').update(value).digest('hex');
 export const stateRoot = () => process.env.MAGPIE_CODEX_STATE_DIR ?? join(homedir(), '.local', 'state', 'magpie-codex-dispatch');
@@ -48,11 +48,22 @@ export class ChannelStore {
     return operation;
   }
   register(name, args) {
+    // Follow-ups must target an exact active turn. Reject malformed requests
+    // before they reserve an immutable notification fingerprint.
+    if (name === 'codex_followup') validate('followup', args);
     if (typeof args.requestId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(args.requestId)) throw new Error('Invalid requestId.');
     const key = hash(args.requestId);
-    const fingerprint = hash(JSON.stringify([name, Object.keys(args).sort().map(k => [k, args[k]])]));
+    const fingerprintFor = input => hash(JSON.stringify([name, Object.keys(input).sort().map(k => [k, input[k]])]));
+    const fingerprint = fingerprintFor(args);
     return this.change(data => {
       const previous = data.tasks[key];
+      // Older hooks reserved follow-ups without turnId before the dispatcher
+      // rejected them. Only repair that exact invalid input, never an accepted
+      // or otherwise changed request. The dispatch journal remains authoritative.
+      if (name === 'codex_followup' && previous?.name === name && !previous.turnId && !previous.event && !previous.review) {
+        const { turnId, ...missingTurn } = args;
+        if (previous.fingerprint === fingerprintFor(missingTurn)) previous.fingerprint = fingerprint;
+      }
       if (previous && previous.fingerprint !== fingerprint) throw new Error('REQUEST_ID_CONFLICT: notification binding differs.');
       if (!previous) {
         if (Object.keys(data.tasks).length >= 4096) throw new Error('Channel history is full. Start a new launcher session.');

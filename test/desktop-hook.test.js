@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { runHook, dispatchName, acceptedReceipt } from '../src/desktop-hook.js';
 import { configuration, install } from '../src/install-desktop.js';
 import { hash } from '../src/channel-store.js';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const base = { session_id: '00000000-0000-4000-8000-000000000001', tool_name: 'mcp__magpie__magpie-codex-dispatch_codex_dispatch', tool_input: { requestId: 'desktop-test-001', threadId: 'thread-1', prompt: 'OK' } };
 const receipt = { accepted: true, requestId: base.tool_input.requestId, threadId: 'thread-1', turnId: 'turn-1' };
@@ -24,6 +26,41 @@ test('PreToolUse binds session before dispatch without waiting for completion', 
   const result = await runHook({ ...base, hook_event_name: 'PreToolUse' }, async (...args) => { calls.push(args); return { key: 'key' }; });
   assert.equal(result.code, 0); assert.match(result.json.hookSpecificOutput.additionalContext, /Do not poll/);
   assert.deepEqual(calls.map(c => c[1]), ['hook_register']); assert.equal(calls[0][0], base.session_id);
+});
+
+test('follow-up validates before binding and repairs an exact legacy binding on a live old worker', async () => {
+  const input = { ...base, hook_event_name: 'PreToolUse', tool_name: 'mcp__magpie__codex_followup',
+    tool_input: { ...base.tool_input, threadId: base.session_id, turnId: 'turn-1' } };
+  const calls = [];
+  const { turnId, ...missingTurn } = input.tool_input;
+  const request = async (session, method, args) => {
+    calls.push([method, args]);
+    if (method === 'status') return { tasks: [{ requestId: input.tool_input.requestId, state: 'awaiting_receipt' }] };
+    if (args.input.turnId) throw new Error('REQUEST_ID_CONFLICT: notification binding differs.');
+    assert.deepEqual(args.input, missingTurn);
+    return { key: 'legacy' };
+  };
+  assert.equal((await runHook(input, request)).code, 0);
+  assert.deepEqual(calls.map(c => c[0]), ['hook_register', 'status', 'hook_register']);
+  calls.length = 0;
+  await assert.rejects(runHook({ ...input, tool_input: missingTurn }, request), /turnId is required/);
+  assert.equal(calls.length, 0);
+  await assert.rejects(runHook(input, async (session, method) => {
+    if (method === 'status') return { tasks: [{ requestId: input.tool_input.requestId, state: 'watching' }] };
+    throw new Error('REQUEST_ID_CONFLICT: notification binding differs.');
+  }), /CONFLICT/);
+});
+
+test('native hook reports a missing turn as invalid arguments rather than a broken notification service', () => {
+  const child = spawnSync(process.execPath, [fileURLToPath(new URL('../src/desktop-hook.js', import.meta.url))], {
+    input: JSON.stringify({ ...base, hook_event_name: 'PreToolUse', tool_name: 'mcp__magpie__codex_followup',
+      tool_input: { ...base.tool_input, threadId: base.session_id } }), encoding: 'utf8', timeout: 5000,
+  });
+  assert.equal(child.status, 0);
+  const output = JSON.parse(child.stdout).hookSpecificOutput;
+  assert.equal(output.permissionDecision, 'deny');
+  assert.match(output.permissionDecisionReason, /turnId is required/);
+  assert.doesNotMatch(output.permissionDecisionReason, /binding failed/);
 });
 test('PostToolUse binds accepted exact turn and returns native idle wake exit code', async () => {
   const calls = [], event = { eventId: 'event-1', threadId: 'thread-1', turnId: 'turn-1', status: 'failed' };
