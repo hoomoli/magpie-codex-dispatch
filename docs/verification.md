@@ -2,6 +2,15 @@
 
 # Verification / 验收记录
 
+## Version 0.0.11 (2026-11-09)
+
+- Fixed desktop render adaptation for background subagent tool items: app-server `receiverThreadIds` are now expanded into `receiverThreads` entries with explicit null thread metadata, on both item start and completion. Native desktop rendering expects this collection; raw app-server items are not render-ready.
+- The affected running thread's captured snapshot contained 10 subagent tool items missing the collection. The desktop's collection iteration failed for all 10 before conversion and succeeded after conversion. This is a snapshot-level reproduction, not a captured desktop exception stack or visual acceptance.
+- Syntax checks and all 128 automated tests passed. The regression covers item start, completion replacement, an empty receiver list, and preservation of the original wire item.
+- After the affected turn naturally completed, live state confirmed an idle parent, no pending requests, and four completed subagents. The original authenticated owner accepted release; both original processes exited, the writer lock was released, and persisted history and pinned membership remained readable. No active work was interrupted. Native desktop reopening is still a separate visual acceptance check.
+- The owner explicitly requested publication. The full Claude/UI release gate remains **CLOSED** and unrelated findings remain open. Release validation includes syntax checks, all 128 automated tests, whitespace checks, both isolated real-AppServer lifecycle scripts, and package dry-run.
+- Existing workers keep their already-loaded implementation. Updating package files does not repair their in-memory snapshots. Do not kill active work to reload rendering; once idle, use explicit owner release/handoff and reopen through native desktop history. Actual desktop opening remains to be verified.
+
 ## Version 0.0.10 (2026-11-09)
 
 - The owner explicitly requested direct publication of optional creation pinning. The full Claude/UI release acceptance gate remains **CLOSED**; this authorization does not change prior findings or establish a new complete acceptance pass.

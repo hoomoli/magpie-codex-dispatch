@@ -1,4 +1,9 @@
 // Render state is distinct from AppServer wire state. Never omit turn input.
+export function renderItem(item) {
+  if (item.type !== 'collabAgentToolCall') return item;
+  return { ...item, receiverThreads: item.receiverThreadIds.map(threadId => ({ threadId, thread: null })) };
+}
+
 export function conversationState(thread, settings, title) {
   return { id: thread.id, hostId: 'local', forkedFromId: null, parentThreadId: null,
     turns: [], requests: [], createdAt: thread.createdAt * 1000, updatedAt: thread.updatedAt * 1000,
@@ -26,8 +31,9 @@ export function applyNotification(state, message, input = []) {
   }
   if (message.method === 'thread/status/changed') state.threadRuntimeStatus = p.status;
   if (turn && ['item/started', 'item/completed'].includes(message.method)) {
+    const rendered = renderItem(p.item);
     const index = turn.items.findIndex(i => i.id === p.item.id);
-    if (index < 0) turn.items.push(p.item); else turn.items[index] = p.item;
+    if (index < 0) turn.items.push(rendered); else turn.items[index] = rendered;
     if (message.method === 'item/completed' && !turn.completedItemIds.includes(p.item.id)) turn.completedItemIds.push(p.item.id);
   }
   const item = turn?.items.find(i => i.id === p.itemId);

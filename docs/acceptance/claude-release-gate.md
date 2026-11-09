@@ -55,6 +55,7 @@ Resolve tool names from the actual MCP catalog. Existing names are normally `mcp
 | U01 | Background creation/sidebar | Keep another chat selected. Record before/after screenshots of the native Codex desktop while M03/M04 is accepted/running/completed. QA chat appears in ordinary sidebar without manual open, navigation, pinning, or stealing focus. Execution starts even while it is not selected. |
 | U02 | Stream and controls | Open only a QA chat. Observe incremental output, correct final output, followup, stop, and any approval UI. Compare visible final state with the exact tool turn. Do not infer per-token rendering from terminal status. |
 | U03 | Archival consistency | After M15, capture independent active and archived inventories and report the actual sidebar state. Server archival is not proof of immediate sidebar refresh; do not claim it. If desktop-held fixtures require manual native archive, capture the operator observation separately and never count it as plugin integration success. |
+| U04 | Subagent history rendering | In a background QA task explicitly authorize a small subagent task. Open the parent while running, navigate away, then reopen after subagent start and completion. Observe the subagent card and readable parent history with no error screen. Verify both started/completed snapshots expose `receiverThreads`, including an empty receiver list. A server-side status read alone does not pass visual acceptance. |
 
 ## Required teardown acceptance
 

@@ -102,3 +102,24 @@ test('optional pin is forwarded once and participates in durable request identit
   await assert.rejects(create({ ...args, pin: false }), { code: 'REQUEST_ID_CONFLICT' });
   await assert.rejects(create({ ...args, pin: 'true' }), { code: 'INVALID_ARGUMENT' });
 });
+
+test('subagent items expose desktop receiver threads on start and completion without changing wire data', () => {
+  const { runtime } = fixture();
+  runtime.notify({ method: 'turn/started', params: { threadId: id, turn: { id: 'turn-1', status: 'inProgress' } } });
+  const child = '01900000-0000-7000-8000-000000000002';
+  const wire = { type: 'collabAgentToolCall', id: 'spawn', tool: 'spawnAgent', status: 'inProgress',
+    senderThreadId: id, receiverThreadIds: [child], agentsStates: { [child]: { status: 'running', message: null } } };
+  for (const method of ['item/started', 'item/completed']) {
+    const item = { ...wire, status: method === 'item/completed' ? 'completed' : 'inProgress' };
+    runtime.notify({ method, params: { threadId: id, turnId: 'turn-1', item } });
+    const rendered = runtime.snapshot().state.turns[0].items[0];
+    // Desktop subagent rendering iterates receiverThreads, not receiverThreadIds.
+    assert.deepEqual(rendered.receiverThreads.map(receiver => [receiver.threadId, receiver.thread]), [[child, null]]);
+    assert.equal(rendered.status, item.status);
+    assert.equal(Object.hasOwn(item, 'receiverThreads'), false);
+    assert.equal(runtime.state.turns[0].items.length, 1);
+  }
+  runtime.notify({ method: 'item/completed', params: { threadId: id, turnId: 'turn-1',
+    item: { ...wire, id: 'wait-empty', tool: 'wait', receiverThreadIds: [] } } });
+  assert.deepEqual(runtime.state.turns[0].items[1].receiverThreads, []);
+});
