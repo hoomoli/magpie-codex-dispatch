@@ -8,7 +8,7 @@ import { pluginVersion } from './version.js';
 
 const MAX_BYTES = 32 * 1024 * 1024;
 const ALLOWED = new Set(['initialize', 'project/list', 'project/read', 'thread/start', 'thread/read',
-  'thread/list', 'thread/turns/list', 'thread/name/set', 'thread/unsubscribe', 'thread/loaded/list']);
+  'threadSection/list', 'thread/section/move', 'thread/list', 'thread/turns/list', 'thread/name/set', 'thread/unsubscribe', 'thread/loaded/list']);
 
 // Classify known server errors without forwarding payloads, paths or prompts.
 export function rpcRejection(method, params, failure, companion = false) {

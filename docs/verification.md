@@ -2,6 +2,15 @@
 
 # Verification / 验收记录
 
+## Version 0.0.10 (2026-11-09)
+
+- The owner explicitly requested direct publication of optional creation pinning. The full Claude/UI release acceptance gate remains **CLOSED**; this authorization does not change prior findings or establish a new complete acceptance pass.
+- `codex_create_task` accepts optional `pin: true`. Omitted/false keeps the existing unpinned behavior. Requested pins are applied before execution, verified through server readback, and reported as `pinned: true` / `pinConfirmed: true`.
+- Opt-in pinning participates in durable request identity. Accepted retries and later turns do not re-pin a thread manually unpinned by the user. Unsupported or unconfirmed pins stop before task submission and preserve the created thread ID for inspection.
+- Agent policy is documented separately from the plugin default. The owner's local Claude rules explicitly request pinning for new tasks unless overridden; personal rules are not packaged or committed.
+- A real newly created, empty AppServer fixture was pinned, verified through readback and a section-filtered listing, then unpinned and archived. No model turn was started. Actual desktop pixels and genuine Claude invocation of this feature remain unverified.
+- Release validation: syntax checks, all 127 automated tests, whitespace checks, both isolated real-AppServer lifecycle scripts, and package dry-run passed. Existing unrelated acceptance findings remain open.
+
 ## Version 0.0.9 (2026-11-09)
 
 - The owner requested publication of the follow-up notification fix and an update of the installed Magpie plugin. The full release acceptance gate remains **CLOSED**; this patch does not claim a new complete Claude/UI acceptance pass or resolution of unrelated 0.0.8 findings.

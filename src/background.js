@@ -1,3 +1,4 @@
+import { validatePin } from './pinning.js';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -24,9 +25,9 @@ export function createBackground({ stateDirectory, socketPath, resolve = resolve
   }, startupTimeoutMs = 35000 } = {}) {
   const directory = backgroundDirectory(stateDirectory), store = new Operations(directory);
   return async (args, { abort } = {}) => {
-    requestKey(args.requestId); requestedMode(args);
+    requestKey(args.requestId); requestedMode(args); validatePin(args);
     const fingerprint = digest(JSON.stringify(['background-v1', args.prompt, args.title ?? null,
-      args.projectId ?? null, args.projectName ?? null, args.cwd ?? null, requestedMode(args)]));
+      args.projectId ?? null, args.projectName ?? null, args.cwd ?? null, requestedMode(args), ...(args.pin === true ? [{ pin: true }] : [])]));
     await store.locked(args.requestId, async () => {
       const old = await store.read(args.requestId);
       if (old) { if (old.fingerprint !== fingerprint) throw new DispatchError('REQUEST_ID_CONFLICT', 'This request ID belongs to different arguments.'); return; }

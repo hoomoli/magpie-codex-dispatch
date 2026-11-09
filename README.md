@@ -2,7 +2,7 @@
 
 [中文说明](README.zh-CN.md) · [Ownership contract / 控制权规范](docs/ownership.md)
 
-Current release version: **0.0.9** — retained background execution, desktop follower streaming, event-driven Claude review, stored-history status, and archival through the original background owner or an unattached subtree. Permanent deletion and direct archival of desktop-owned chats remain outside the supported scope.
+Current release version: **0.0.10** — retained background execution, desktop follower streaming, event-driven Claude review, stored-history status, and archival through the original background owner or an unattached subtree. Permanent deletion and direct archival of desktop-owned chats remain outside the supported scope.
 
 The display name is `magpie-codex-dispatch`; the version belongs in Magpie’s separate version badge. Local-directory installs hide that badge, so use `codex_plugin_info` to verify their loaded version. Git-based installs also show a commit identifier managed by Magpie.
 
@@ -27,9 +27,9 @@ Claude / other MCP client
     -> completion event: wake Claude for review
 ```
 
-New tasks execute in a detached worker using the app-bundled AppServer. The worker verifies effective permissions, publishes native follower snapshots, and forwards approvals and guarded interruptions. The desktop displays progress without a separate dashboard. Existing desktop-thread dispatch and explicit Companion handoff retain their native-owner path. No new task is opened or pinned automatically.
+New tasks execute in a detached worker using the app-bundled AppServer. The worker verifies effective permissions, publishes native follower snapshots, and forwards approvals and guarded interruptions. The desktop displays progress without a separate dashboard. Existing desktop-thread dispatch and explicit Companion handoff retain their native-owner path. New tasks are never opened automatically. Pinning is opt-in through `pin: true` on `codex_create_task`.
 
-Release acceptance remains **CLOSED**. The owner explicitly accepted the unresolved findings and authorized this release. All required local checks passed; see the [0.0.9 release record](docs/verification.md).
+Release acceptance remains **CLOSED**. The owner explicitly accepted the unresolved findings and authorized this release. All required local checks passed; see the [0.0.10 release record](docs/verification.md).
 
 ## Install and connect Claude
 
@@ -115,6 +115,10 @@ Select an exact unique `projectName` or canonical `projectId` from `codex_projec
 Optional `title` is limited to 160 characters and defaults to `Magpie task`. The new empty thread is archived and immediately restored once, before execution, to produce a genuine catalog event. After the background worker owns the restored thread and starts the task, it forwards that event to refresh the sidebar without navigation. No existing or active user thread is cycled.
 
 ### Permission modes
+
+`codex_create_task` accepts optional `pin: true` to place the new thread in the native desktop pinned section before execution. Omitted or `false` keeps the existing unpinned behavior. A successful requested pin returns `pinned: true` and `pinConfirmed: true` after server readback; this confirms persisted membership, not visual observation. Unsupported or unconfirmed pinning stops before task submission and preserves the created thread ID in `codex_operation_status`; do not create a replacement automatically. Pinning is applied once: replaying an accepted request or sending later turns does not restore a pin manually removed by the user. Preserve the original `pin` argument and request ID on retries.
+
+Agent policy belongs in local Claude rules rather than the plugin default. Example rule: “For new tasks created through magpie-codex-dispatch, explicitly pass `pin: true` unless the user requests an unpinned task. Do not re-pin on follow-up turns or after manual unpinning. Verify the loaded tool schema supports `pin` before dispatch; if unavailable, reload/update the plugin rather than claiming it was pinned.”
 
 `codex_create_task` and `codex_dispatch` accept `permissionMode`:
 

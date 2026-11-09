@@ -105,3 +105,9 @@ node scripts/verify-lifecycle.mjs
 The lifecycle probe uses a private temporary `CODEX_HOME`, creates no model turns and removes only its own fixtures/backend. It verifies that independent-server archive is refused on an idle held writer, that an external unsubscribe cannot release that writer, that the same archive request can proceed after normal owner shutdown, and that permanent deletion is blocked by the plugin.
 
 Direct native desktop-held archival and immediate sidebar refresh remain excluded from the plugin API contract. The separately tested [desktop archival delegation](native-archive-bridge.md) uses an actual desktop model turn and its official tools. Do not continue probing unauthorized native peers or revive rejected takeover/shared-server paths. Existing unrelated acceptance failures remain open; this local delegation test alone does not open the release gate.
+
+## Optional creation pinning (2026-11-09 local verification)
+
+The currently installed bundled app-server exposes `threadSection/list` and `thread/section/move`. The desktop tool alias `pinned` maps to a server-owned section UUID; passing the alias directly to app-server is not the integration contract. The plugin verifies the known section is advertised, moves only the newly created thread, then reads back `thread.section.id` before starting execution. An isolated new, empty fixture was successfully moved, found in a section-filtered listing, then unpinned and archived. No model turn was started by this capability probe. This verifies persisted native section membership; actual desktop pixels and genuine Claude invocation remain separate acceptance checks.
+
+`codex_create_task` opts in with `pin: true`; omitted/false preserves the previous default. The durable request fingerprint includes opt-in pinning, and accepted retries do not repeat it. Local agent rules may require explicit opt-in; the package does not impose that policy on other users.

@@ -1,3 +1,4 @@
+import { validatePin, pinNewThread } from './pinning.js';
 import { createBackground, backgroundDirectory } from './background.js';
 import { requestedMode, permissionSettings } from './permissions.js';
 import { homedir } from 'node:os';
@@ -15,7 +16,7 @@ function validate(operation, args) {
   requestKey(args?.requestId);
   if (operation === 'handoff') validateThread(args.threadId);
   if (operation === 'create') {
-    requestedMode(args);
+    requestedMode(args); validatePin(args);
     if (typeof args.prompt !== 'string' || !args.prompt.trim() || Buffer.byteLength(args.prompt) > 65536) throw new DispatchError('INVALID_ARGUMENT', 'prompt must contain 1-65536 UTF-8 bytes.');
     if (args.title !== undefined && (typeof args.title !== 'string' || !args.title.trim() || args.title.length > 160)) throw new DispatchError('INVALID_ARGUMENT', 'title must contain 1-160 characters.');
     for (const key of ['projectId', 'projectName', 'cwd']) if (args[key] !== undefined && (typeof args[key] !== 'string' || !args[key])) throw new DispatchError('INVALID_ARGUMENT', `${key} must be a nonempty string.`);
@@ -25,6 +26,7 @@ function fingerprint(operation, args) {
   const keys = operation === 'create' ? ['prompt', 'title', 'projectId', 'projectName', 'cwd', 'sandbox'] : ['threadId', 'sourceEndpoint'];
   const values = [operation, ...keys.map(key => args[key] ?? null)];
   if (operation === 'create' && args.permissionMode !== undefined) values.push(args.permissionMode);
+  if (operation === 'create' && args.pin === true) values.push({ pin: true });
   return digest(JSON.stringify(values));
 }
 function publicState(state) {
@@ -182,6 +184,9 @@ export function createFlows(options = {}) {
           throw new DispatchError('PROJECT_MISMATCH', 'Resumed creation metadata did not match. Nothing was dispatched.');
         }
         await save({ projectVerified: true });
+      }
+      if (operation === 'create' && args.pin === true && !state.pinConfirmed) {
+        await save(await server({ signal: abort }, c => pinNewThread(c, state.threadId)));
       }
       let desktop;
       try { desktop = await attach(state.threadId, settings); } catch (error) { if (abort?.aborted) throw error; }

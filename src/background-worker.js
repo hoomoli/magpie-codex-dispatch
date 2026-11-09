@@ -1,3 +1,4 @@
+import { pinNewThread } from './pinning.js';
 import { readFile, rm, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { AppServer } from './rpc.js';
@@ -86,6 +87,7 @@ try {
   await rpc.request('thread/archive', { threadId }); await save({ phase: 'archived' });
   await rpc.request('thread/unarchive', { threadId }); await save({ phase: 'restored' });
   result = await rpc.request('thread/resume', { threadId, ...settings });
+  if (args.pin === true) await save(await pinNewThread(rpc, threadId));
   runtime.initialize(result, args.title ?? 'Magpie task');
   const permissions = assertPermissions(runtime.state, requestedMode(args));
   await connect(); // Never launch invisible work if the desktop protocol cannot initialize.
@@ -104,6 +106,7 @@ try {
   const turn = await runtime.start({ threadId, input: [{ type: 'text', text: args.prompt, text_elements: [] }], ...settings });
   const receipt = { accepted: true, completed: false, requestId: args.requestId, threadId, turnId: turn.turn.id,
     owner: 'background', retention: 'until-archive-or-handoff', ownerControlVersion: 1,
+    ...(args.pin === true ? { pinned: true, pinConfirmed: true } : {}),
     permissions, threadUrl: `codex://threads/${threadId}` };
   await save({ ...receipt, phase: 'accepted' });
   // Compatible durable receipt for the existing completion channel's crash recovery.

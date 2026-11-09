@@ -86,3 +86,19 @@ test('offline completion fallback matches exact turn and does not turn missing/r
   const monitor=new CompletionMonitor({store,stateDirectory:root,desktopFactory:()=>({connect:async()=>{throw Error('offline');},close(){}}),onEvent:completed});
   t.after(()=>monitor.close());monitor.refresh();await done;
 });
+
+test('optional pin is forwarded once and participates in durable request identity', async t => {
+  const root = await mkdtemp('/tmp/mcd-pin-'); t.after(() => rm(root, { recursive: true, force: true }));
+  let launches = 0;
+  const args = { requestId: 'optional-pin-create', prompt: 'test', cwd: root, pin: true };
+  const create = createBackground({ stateDirectory: root, resolve: async () => ({ cwd: root, projectId: null }), launch: async path => {
+    launches++;
+    assert.equal(JSON.parse(await readFile(path)).args.pin, true);
+    const store = new Operations(join(root, 'background'));
+    await store.save(args.requestId, { ...await store.read(args.requestId), accepted: true, phase: 'accepted', threadId: id, pinConfirmed: true });
+  } });
+  assert.equal((await create(args)).pinConfirmed, true);
+  await create(args); assert.equal(launches, 1);
+  await assert.rejects(create({ ...args, pin: false }), { code: 'REQUEST_ID_CONFLICT' });
+  await assert.rejects(create({ ...args, pin: 'true' }), { code: 'INVALID_ARGUMENT' });
+});
