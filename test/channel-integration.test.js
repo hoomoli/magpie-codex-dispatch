@@ -94,6 +94,12 @@ for (const crash of [false, true]) test(`real stdio channel + detached worker: o
   assert.equal(JSON.parse(final.content[0].text).turnId, turnId);
   const ack = await client.callTool({ name: 'codex_review_complete', arguments: { eventId, verdict: 'passed', summary: 'Isolated fixture reviewed.' } });
   assert.ok(!ack.isError, JSON.stringify(ack));
+  const retained = await client.callTool({ name: 'codex_task_finalize', arguments: {
+    eventId, mergeStatus: 'pending', mainValidationStatus: 'pending', followupRequired: true, keep: false,
+    evidence: 'Review passed; merge and main validation remain pending.',
+  } });
+  assert.ok(!retained.isError, JSON.stringify(retained));
+  assert.equal(JSON.parse(retained.content[0].text).phase, 'retained');
   await client.close(); await connect();
   await client.listTools(); await pause(100);
   assert.equal(events.length, 1);

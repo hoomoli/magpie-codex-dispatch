@@ -26,3 +26,11 @@ The inspected desktop stream handler rejects snapshots for threads it is not fol
 Tests cover exact-turn filtering, request lifecycle/deduplication, queue restart and privacy, continued completion delivery, native hook rearming, and execution-mode replay protection. A real hook process plus detached notification worker is exercised against a simulated desktop stream without polling or any approval/permission/execution mutation. Actual native sidebar pixels, approval dialog presentation, and live Claude wakeup require desktop acceptance; these automated checks do not establish that acceptance.
 
 Install using the existing desktop hook installer, then reload the plugin/new Claude session. Do not kill task workers or disconnect other live notification clients to force an upgrade. Existing attention events in an old notification worker remain unsupported until that worker is safely reloaded.
+
+## Historical render compatibility
+
+Outgoing snapshots normalize subagent items in both live turns and paginated history, including reconnect and the last snapshots before handoff. Normalization preserves already hydrated receiver-thread metadata, fills missing render collections from wire receiver IDs, and does not mutate transcripts or the source snapshot. Malformed receiver IDs stop publication rather than sending a snapshot known to crash the desktop.
+
+The 2026-11-10 affected native-owned conversation retained 12 incompatible historical items among 16 subagent records. Actual Sentry breadcrumbs at 09:47:48 and 09:57:33 (Asia/Shanghai) pointed to the installed desktop's `receiverThreads.map` access. Normalizing the captured state makes all 16 accesses pass. This is a data/stack reproduction, not a claim that the existing native cache has been repaired.
+
+A plugin update only protects snapshots emitted by upgraded owners. It cannot rewrite a snapshot already adopted by the native desktop, and upgrading files does not replace loaded execution workers. Existing polluted native history needs a supported native reload from persisted history; if only an app restart is available, wait until active work is safely complete. Do not edit session JSONL/SQLite, impersonate the native IPC owner, or terminate active workers to force recovery.

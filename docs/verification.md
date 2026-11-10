@@ -2,6 +2,18 @@
 
 # Verification / 验收记录
 
+## Version 0.0.13 (2026-11-10)
+
+- The owner explicitly requested publication and a remote GitHub installation. The complete Claude/UI acceptance gate remains **CLOSED**; this does not claim full live acceptance or recovery of the already-polluted native cache.
+- Remote installation can explicitly migrate approved prior notification-server and hook paths without duplicating hooks or replacing an unrelated server. Personal policy and configuration backups stay outside the package.
+
+- Added explicit task finalization and automatic guarded archive after passed review, completed or unnecessary merge/main validation, no follow-up and no user retention request. Review alone remains insufficient. Unknown outcomes retain the original archive ID; no historical reviews are automatically closed.
+- Extended exact-turn guards through lifecycle journals and authenticated retained-owner control. Old owners that cannot enforce the guard are blocked safely. Desktop ownership and held-descendant limits remain unchanged.
+- Normalized subagent render fields across outgoing live and paginated-history snapshots, including retransmission. Preserved hydrated receiver metadata and source data; invalid receiver IDs block publication.
+- Actual native Sentry stacks and the affected snapshot established the historical render fault. The old native-owned cache remains outside plugin mutation scope and requires supported native history reload.
+- Automated coverage includes finalization conditions, concurrent/restarted closure, uncertain outcomes, old transports, newer-turn guards, and mixed historical snapshot normalization. Live automatic archival via authenticated Claude and visual recovery of the existing native chat remain unverified.
+- Local validation: all 180 automated tests passed with zero failures/skips; syntax and whitespace checks, package dry-run, and both isolated real-AppServer lifecycle scripts passed. Actual stdio MCP servers and detached notification workers reached a simulated lifecycle backend and archived eligible fixtures once through both transports. The captured affected snapshot passed all 16 desktop receiver-collection accesses after boundary normalization, with unchanged source data and an idempotent second pass.
+
 ## Version 0.0.12 (2026-11-10)
 
 - Publication was explicitly requested by the owner. The complete Claude/UI release gate remains **CLOSED**; this release does not claim a new full acceptance pass or resolution of unrelated known findings.

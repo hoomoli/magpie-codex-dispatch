@@ -6,20 +6,22 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { pluginVersion } from './version.js';
 
-export function configuration(settings, config, directory, node = process.execPath) {
+export function configuration(settings, config, directory, node = process.execPath, { migrateFrom = [] } = {}) {
   const next = structuredClone(settings), mcp = structuredClone(config);
   const hook = join(directory, 'desktop-hook.js');
+  const managedHooks = [hook, ...migrateFrom.map(path => join(path, 'desktop-hook.js'))];
   const matcher = '^mcp__.*(?:magpie|codex-dispatch).*codex_(dispatch|create_task|followup)$';
   next.hooks ??= {};
   for (const event of ['PreToolUse', 'PostToolUse', 'SessionStart']) {
     const groups = next.hooks[event] ?? [];
-    next.hooks[event] = groups.map(group => ({ ...group, hooks: group.hooks.filter(h => !h.args?.some(a => a === hook)) })).filter(group => group.hooks.length);
-    next.hooks[event].push({ ...(event === 'SessionStart' ? {} : { matcher: event === 'PostToolUse' ? `${matcher}|^mcp__codex-notifications__codex_(review_complete|notification_status)$` : matcher }), hooks: [{ type: 'command', command: node, args: [hook], timeout: event === 'PreToolUse' ? 15 : 86400, ...(event === 'PreToolUse' ? { onFailure: 'block' } : { asyncRewake: true }) }] });
+    next.hooks[event] = groups.map(group => ({ ...group, hooks: group.hooks.filter(h => !h.args?.some(a => managedHooks.includes(a))) })).filter(group => group.hooks.length);
+    next.hooks[event].push({ ...(event === 'SessionStart' ? {} : { matcher: event === 'PostToolUse' ? `${matcher}|^mcp__codex-notifications__codex_(review_complete|notification_status|task_finalize)$` : matcher }), hooks: [{ type: 'command', command: node, args: [hook], timeout: event === 'PreToolUse' ? 15 : 86400, ...(event === 'PreToolUse' ? { onFailure: 'block' } : { asyncRewake: true }) }] });
   }
   mcp.mcpServers ??= {};
   const previous = mcp.mcpServers['codex-notifications'];
   const server = join(directory, 'notifications.js');
-  if (previous && !previous.args?.includes(server)) throw new Error('An unrelated codex-notifications server already exists.');
+  const managedServers = [server, ...migrateFrom.map(path => join(path, 'notifications.js'))];
+  if (previous && !previous.args?.some(path => managedServers.includes(path))) throw new Error('An unrelated codex-notifications server already exists.');
   mcp.mcpServers['codex-notifications'] = { type: 'stdio', command: node, args: [server] };
   return { settings: next, config: mcp };
 }
@@ -31,10 +33,10 @@ async function read(path) {
     return { text, value: JSON.parse(text) };
   } catch (error) { if (error.code === 'ENOENT') return { text: null, value: {} }; throw error; }
 }
-export async function install(home = homedir(), directory = dirname(fileURLToPath(import.meta.url))) {
+export async function install(home = homedir(), directory = dirname(fileURLToPath(import.meta.url)), options = {}) {
   const paths = [join(home, '.claude', 'settings.json'), join(home, '.claude.json')];
   const original = await Promise.all(paths.map(read));
-  const next = configuration(original[0].value, original[1].value, directory);
+  const next = configuration(original[0].value, original[1].value, directory, process.execPath, options);
   const texts = [next.settings, next.config].map(v => JSON.stringify(v, null, 2) + '\n');
   const backups = [];
   for (let i = 0; i < paths.length; i++) {

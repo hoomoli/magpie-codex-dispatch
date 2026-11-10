@@ -24,7 +24,7 @@ export default async function MagpieCodexDispatch() {
       try {
         if (operation === 'plugin_info') return JSON.stringify({ name: pluginName, pluginVersion, loadedAt, moduleUrl,
           capabilities: { optionalCreatePin: true, pinDefault: false, executionModes: ['background', 'desktop'], attentionNotifications: true,
-            backgroundSidebarRuntimeSync: false },
+            backgroundSidebarRuntimeSync: false, historicalSnapshotNormalization: true },
           lifecycle: { archiveScope: 'background-owner-or-unattached', backgroundOwnerArchive: true, desktopHeldArchive: false,
             backgroundRetention: 'until-archive-or-handoff', maxBackgroundOwners: ownerLimit,
             permanentDelete: false, sidebarRefresh: 'notification-after-ack' } });

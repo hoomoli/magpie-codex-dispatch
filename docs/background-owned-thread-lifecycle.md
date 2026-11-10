@@ -108,3 +108,7 @@ Codex 通过 Magpie 创建 `MAGPIE-QA-LOCAL5-API-SMOKE-1106`（`<private-fixture
 相关实现：[后台进程](../src/background-worker.js)、[后台运行逻辑](../src/background-runtime.js)、[桌面跟随通道](../src/background-ipc.js)、[所有权检查](../src/ownership.js)。
 
 [集成能力核实记录](app-server-capabilities.md)说明跨进程所有权限制。[桌面归档委托流程](native-archive-bridge.md)记录另一条已测过的路径：针对桌面已持有的会话，让真正的桌面模型轮次调用官方归档工具。它与本文的原后台归档是两种不同方案。
+
+## Automatic closure policy
+
+Task completion keeps ownership while Claude reviews and integrates the result. Once the exact turn has passed review, required integration and main-branch validation are finished, and no follow-up or user retention request remains, `codex_task_finalize` automatically routes guarded archival through the existing lifecycle implementation. Failed, pending and user-retained conversations remain available. A review receipt alone does not archive a chat. Current ownership, active requests and descendants are rechecked; native-owned chats require native owner action. See [protocol and recovery](desktop-notifications.md#task-closure-and-automatic-archival).

@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { versions } from './desktop.js';
 import { DispatchError } from './errors.js';
+import { renderConversation } from './background-state.js';
 export const ownerVersions = { ...versions, 'thread-archived': 2, 'thread-stream-following-status-requested': 1,
   'thread-unarchived': 1, 'thread-follower-command-approval-decision': 1,
   'thread-follower-file-approval-decision': 1, 'thread-follower-permissions-request-approval-response': 1,
@@ -55,7 +56,7 @@ export class BackgroundIPC {
     if (!targets.length || this.closed) return;
     const { state, revision } = this.snapshot();
     this.broadcast('thread-stream-state-changed', { hostId: 'local', conversationId: this.threadId,
-      change: { type: 'snapshot', revision, conversationState: state } }, targets);
+      change: { type: 'snapshot', revision, conversationState: renderConversation(state) } }, targets);
   }
   accepts(q) {
     return q.params?.conversationId === this.threadId && (q.params.hostId ?? q.hostId ?? 'local') === 'local' &&

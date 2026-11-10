@@ -25,6 +25,8 @@ Claude Code Channels are in research preview. The launcher explicitly requests t
 4. A terminal state (`completed`, `failed`, `interrupted`) creates a durable event for that exact thread and turn. Intermediate output and unrelated turns do not trigger review. The event carries identifiers and status, not instructions copied from task output.
 5. The stdio server pushes `notifications/claude/channel` into the originating Claude session. Claude calls `codex_notification_result` with the event ID to read the exact final turn, checks relevant changes/tests, and calls `codex_review_complete` with an explicit verdict and summary.
 
+After review and required integration/main-branch validation, call `codex_task_finalize` with truthful closure evidence. Eligible tasks are automatically archived; failed, pending and user-retained tasks remain. See [closure and ownership limits](desktop-notifications.md#task-closure-and-automatic-archival).
+
 The worker rejects review before result retrieval and rejects a `passed` verdict for failed, interrupted, or errored execution. Result retrieval is read-only; it never dispatches work or answers approvals. The durable queue stores retrieval metadata, not final output.
 
 `codex_channel_status` reports `awaiting_receipt`, `watching`, `awaiting_review`, or `reviewed`. It is diagnostic, not a polling requirement. Creation/handoff can still return pending until native ownership is ready; retry the same creation request ID as directed. A missing/unknown receipt never causes automatic resubmission.

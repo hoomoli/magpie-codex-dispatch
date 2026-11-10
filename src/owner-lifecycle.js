@@ -10,13 +10,14 @@ export function createOwnerLifecycle({ root, runtime, serverPid, writers = write
   let closing = false;
   return (command, args) => runtime.exclusive(() => store.locked(args.requestId, async () => {
     if (!['archive', 'release'].includes(command)) throw new DispatchError('UNSUPPORTED_OPERATION', 'Permanent deletion and arbitrary owner mutations are not supported.');
-    const fingerprint = digest(JSON.stringify([command, args.threadId.toLowerCase()]));
+    const fingerprint = digest(JSON.stringify([command, args.threadId.toLowerCase(), ...(args.expectedTurnId ? [args.expectedTurnId] : [])]));
     const old = await store.read(args.requestId);
     if (old && old.fingerprint !== fingerprint) throw new DispatchError('REQUEST_ID_CONFLICT', 'This owner request ID belongs to different arguments.');
     if (old && !['preparing', 'preflight_failed'].includes(old.phase)) {
       const { fingerprint: _, ...result } = old; return { ...result, replayed: true };
     }
     const state = { operation: command === 'archive' ? 'archive' : 'release', requestId: args.requestId,
+      ...(args.expectedTurnId ? { expectedTurnId: args.expectedTurnId } : {}),
       threadId: args.threadId, fingerprint, route: 'background-owner', phase: 'preparing', completed: false, submitted: false };
     const save = () => store.save(args.requestId, state);
     const result = () => { const { fingerprint: _, ...publicState } = state; return publicState; };
@@ -31,6 +32,10 @@ export function createOwnerLifecycle({ root, runtime, serverPid, writers = write
       const current = await runtime.rpc.request('thread/read', { threadId: args.threadId, includeTurns: true });
       if (current.thread?.id !== args.threadId || current.thread.ephemeral !== false) throw new DispatchError('INVALID_TARGET', 'A persisted owned thread is required.');
       if (current.thread.status?.type !== 'idle' || current.thread.turns?.at(-1)?.status === 'inProgress') throw new DispatchError('THREAD_ACTIVE', 'Backend does not confirm an idle thread.');
+      if (args.expectedTurnId) {
+        const turn = current.thread.turns?.at(-1);
+        if (turn?.id !== args.expectedTurnId || turn.status !== 'completed' || turn.error) throw new DispatchError('TURN_CHANGED', 'The latest turn is no longer the successfully reviewed turn. Nothing was archived.');
+      }
       let ids = [args.threadId];
       if (command === 'archive') {
         ids = await archiveSubtree(runtime.rpc, args.threadId);

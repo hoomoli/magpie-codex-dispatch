@@ -11,7 +11,7 @@ npm ci
 node src/install-desktop.js
 ```
 
-The installer merges three user-level hook groups into `~/.claude/settings.json` and a stdio `codex-notifications` MCP server into `~/.claude.json`. It preserves unrelated settings, servers, hooks and permissions; changed files receive private backups. It uses absolute executable/script paths, so launching from the Dock does not depend on terminal PATH. Load a new/resumed Desktop Code session after installation. Existing sessions may need their MCP connections reloaded to see the three notification/review tools.
+The installer merges three user-level hook groups into `~/.claude/settings.json` and a stdio `codex-notifications` MCP server into `~/.claude.json`. It preserves unrelated settings, servers, hooks and permissions; changed files receive private backups. It uses absolute executable/script paths, so launching from the Dock does not depend on terminal PATH. Load a new/resumed Desktop Code session after installation. Existing sessions may need their MCP connections reloaded to see the four notification/review tools.
 
 Keep using the existing Magpie `codex_dispatch`, `codex_create_task`, and `codex_followup` tools. No new return-channel parameter is required: native hook input supplies the actual Claude session UUID. The installer does not replace or update the Magpie package installed from GitHub. Query `codex_plugin_info` to distinguish its loaded version from this local notification component.
 
@@ -34,7 +34,7 @@ New hook watchers retry transport disconnection up to three times within the ori
 - Delivery is at least once across restarts. Review acknowledgments are durable and idempotent; same-session concurrent hooks suppress duplicate wakeups. Session resume can replay unreviewed events. Claude must deduplicate by eventId.
 - A follow-up requires the active `turnId`. Invalid follow-ups are rejected before reserving a notification binding. Older unaccepted bindings created without `turnId` allow that missing field to be supplied with the same request ID and otherwise identical arguments; accepted bindings and all other argument changes remain immutable. A binding error alone does not mean monitoring of previously accepted tasks has stopped. `codex_operation_status` covers creation/lifecycle operations, not dispatch/follow-up receipts; diagnose notifications with `codex_notification_status` and inspect the exact turn with `codex_status`.
 - The worker keeps the existing private queue under `~/.local/state/magpie-codex-dispatch/channels/<session-uuid>/`. It stores IDs, statuses and review summaries, not task prompts or Claude messaging tokens. It reconnects the event stream after transport failure, without periodic successful-state polling.
-- The notification server exposes only status/result/review tools; dispatch stays in Magpie. No model API key, inbound messaging setting or broader tool permission is installed.
+- The notification server exposes only status/result/review/finalization tools; dispatch stays in Magpie. No model API key, inbound messaging setting or broader tool permission is installed.
 - To uninstall, remove only the three hook entries referencing `desktop-hook.js` and the `codex-notifications` server. Keep saved state if recovery matters. Backups are full snapshots; do not restore them over later unrelated settings changes.
 
 Local tests cover actual hook processes, detached worker, event delivery, duplicate suppression, recovery, MCP acknowledgment, configuration preservation and idempotent installation. They do not by themselves prove a Desktop session wakes: record that result separately in `verification.md`.
@@ -56,3 +56,23 @@ Both native hooks and the optional Channel transport use the same worker-side re
 The queue persists only result-read metadata; output remains in Codex. Previously recorded reviews remain idempotent. Unreviewed events from an older queue require the new result-read step. Status exposes `capabilities.reviewRequiresResult` and each task's `resultRead` receipt. Safely reload old workers before using this protocol; installing files does not hot-replace a running worker.
 
 This gate proves that the plugin retrieved the exact result before accepting a review. It does not prove that Claude understood the output, inspected every change, or validated the user's business goal. These remain review responsibilities. The installer preserves host permissions: exclusive delegation (preventing Claude from editing files or invoking Codex through other tools) requires a separate host-controlled permission policy. A caller-supplied permission mode is not independent evidence of user authorization.
+
+## Task closure and automatic archival
+
+`codex_review_complete` remains an immutable review receipt. It does not imply that integration or main-branch validation is finished. After review, Claude calls `codex_task_finalize` with the original `sessionId`/`eventId` and all of these explicit fields:
+
+| Field | Values |
+| --- | --- |
+| `mergeStatus` | `pending`, `completed`, `not_required` |
+| `mainValidationStatus` | `pending`, `passed`, `not_required` |
+| `followupRequired` | Whether more work or evidence is needed |
+| `keep` | Whether the user requires retaining the conversation |
+| `evidence` | Actual integration/validation evidence, outstanding work, or why a step is unnecessary |
+
+The worker automatically requests archive only after a passed exact-turn review, any necessary merge and main-branch validation, no remaining follow-up, and no user retention instruction. A caller cannot use this tool to obtain permission to merge, push, run checks, or change task scope. The evidence fields are Claude's factual report; the plugin does not independently prove a Git merge or test run from these flags.
+
+Failed/interrupted work, missing review/result evidence, pending work and user-retained chats remain available. Claude can update closure after the outstanding work is done. Old reviews have no closure intent and are not archived retrospectively. The latest turn is checked before submission and again under lifecycle locks; the retained owner checks it inside the queue that also serializes new turns. A new turn invalidates the old closure attempt. Pending requests and held descendants still prevent archival.
+
+The worker persists closure intent before using a deterministic archive request ID. Restart recovery reuses the same lifecycle journal. Unknown outcomes never create a replacement ID or automatically resubmit; a later finalize call can read a late durable ACK. Notification status exposes `finalization`, including `retained`, `archiving`, `archived`, `blocked`, `owner_action_required`, or `outcome_unknown`, the reasons, and the archive request ID. Inspect `codex_operation_status` with that ID when needed.
+
+Automatic archival requires `capabilities.automaticTaskArchival` in the notification worker. Old retained execution owners must also advertise `expectedTurnArchive`; otherwise guarded archive is blocked without terminating them. Desktop-held threads retain the existing `owner_action_required` boundary: archive through the actual native owner. No impersonation, forced release, app restart or model-turn fallback is performed automatically. Finalization is also available without `sessionId` through the dedicated Channel transport.

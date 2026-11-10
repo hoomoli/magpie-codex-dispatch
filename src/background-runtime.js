@@ -1,4 +1,4 @@
-import { conversationState, applyNotification } from './background-state.js';
+import { conversationState, applyNotification, renderConversation } from './background-state.js';
 import { DispatchError } from './errors.js';
 const responses = {
   'thread-follower-command-approval-decision': 'item/commandExecution/requestApproval',
@@ -23,7 +23,7 @@ export class BackgroundRuntime {
     const result = this.mutation.then(fn);
     this.mutation = result.catch(() => {}); return result;
   }
-  snapshot() { return { state: this.state, revision: this.revision }; }
+  snapshot() { return { state: renderConversation(this.state), revision: this.revision }; }
   changed() { this.revision++; this.publish(this.snapshot()); }
   notify(m) {
     if (!this.state || !applyNotification(this.state, m, this.input)) return;

@@ -8,6 +8,8 @@ import { ChannelStore, routeDirectory, stateRoot, hash, readJSON, privateDirecto
 import { CompletionMonitor } from './channel-monitor.js';
 import { pendingTaskEvents } from './attention.js';
 import { notificationResult } from './notification-result.js';
+import { createTaskFinalizer } from './task-finalization.js';
+import { createLifecycle } from './lifecycle.js';
 import { workerSocket, wire } from './channel-wire.js';
 
 const id = process.argv[2];
@@ -24,6 +26,11 @@ const existing = await lstat(socketPath).catch(e => { if (e.code !== 'ENOENT') t
 if (existing && (!existing.isSocket() || existing.uid !== process.getuid())) throw new Error('Unsafe channel socket.');
 await rm(socketPath, { force: true });
 const { tool } = await plugin();
+const finalize = createTaskFinalizer({ store, sessionId: id,
+  readLatest: async threadId => JSON.parse(await tool.codex_status.execute({ threadId }, {})),
+  readArchive: async requestId => JSON.parse(await tool.codex_operation_status.execute({ requestId }, {})),
+  archive: args => createLifecycle({ stateDirectory: stateRoot(), socketPath: process.env.MAGPIE_CODEX_SOCKET })('archive', args, {}),
+});
 let subscriber, idleTimer;
 const clients = new Set(), announced = new Set();
 const errors = new Map();
@@ -90,11 +97,13 @@ const server = net.createServer(socket => {
         result = await store.review(message.args.eventId, message.args.verdict, message.args.summary);
       } else if (message.method === 'result') {
         result = await notificationResult(store, message.args.eventId);
+      } else if (message.method === 'finalize') {
+        result = await finalize(message.args);
       } else if (message.method === 'status') {
-        result = { sessionId: id, capabilities: { attentionNotifications: true, reviewRequiresResult: true }, totalTasks: Object.keys(store.data.tasks).length, pendingReviews: store.pending().length,
+        result = { sessionId: id, capabilities: { attentionNotifications: true, reviewRequiresResult: true, automaticTaskArchival: true }, totalTasks: Object.keys(store.data.tasks).length, pendingReviews: store.pending().length,
           tasks: Object.values(store.data.tasks).slice(-50).map(t => ({ requestId: t.requestId, threadId: t.threadId, turnId: t.turnId,
           state: t.review ? 'reviewed' : t.event ? 'awaiting_review' : t.attention?.length ? 'awaiting_attention' : t.turnId ? 'watching' : 'awaiting_receipt',
-          attention: t.attention ?? [], event: t.event, resultRead: t.resultRead, review: t.review, lastMonitorError: errors.get(t.key) })) };
+          attention: t.attention ?? [], event: t.event, resultRead: t.resultRead, review: t.review, finalization: t.finalization, lastMonitorError: errors.get(t.key) })) };
       } else if (message.method === 'call') {
         const { name, args } = message;
         if (!Object.hasOwn(tool, name)) throw new Error('Unknown tool.');
@@ -117,4 +126,5 @@ async function shutdown() {
 }
 process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
 await new Promise((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve); });
+await finalize.recover();
 idle();

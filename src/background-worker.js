@@ -94,6 +94,7 @@ try {
   const handle = createOwnerLifecycle({ root: stateDirectory, runtime, serverPid: rpc.child.pid,
     announce: ids => ipc.archived(ids) });
   control = await serveOwner({ root: stateDirectory, threadId, serverPid: rpc.child.pid,
+    capabilities: { expectedTurnArchive: true },
     handle: (command, args) => command === 'status' ? {
       retained: !closing, workerPid: process.pid, serverPid: rpc.child.pid,
       followerCount: ipc?.followers.size ?? 0, lifecycleBlocked: !!runtime.lifecycleBlocked,

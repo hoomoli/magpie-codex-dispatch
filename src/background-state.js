@@ -1,7 +1,43 @@
 // Render state is distinct from AppServer wire state. Never omit turn input.
+import { DispatchError } from './errors.js';
+
 export function renderItem(item) {
   if (item.type !== 'collabAgentToolCall') return item;
-  return { ...item, receiverThreads: item.receiverThreadIds.map(threadId => ({ threadId, thread: null })) };
+  if (!Array.isArray(item.receiverThreadIds) || !item.receiverThreadIds.every(id => typeof id === 'string')) {
+    throw new DispatchError('INVALID_RENDER_STATE', 'A subagent item has invalid receiver IDs; no desktop snapshot was sent.');
+  }
+  const old = Array.isArray(item.receiverThreads) ? item.receiverThreads : [];
+  const receivers = new Map(old.filter(r => r && typeof r.threadId === 'string').map(r => [r.threadId, r]));
+  const receiverThreads = item.receiverThreadIds.map(threadId => {
+    const receiver = receivers.get(threadId);
+    return receiver && Object.hasOwn(receiver, 'thread') ? receiver : { ...receiver, threadId, thread: null };
+  });
+  if (Array.isArray(item.receiverThreads) && old.length === receiverThreads.length && receiverThreads.every((r, i) => r === old[i])) return item;
+  return { ...item, receiverThreads };
+}
+
+// Repair old live and paginated items at the outgoing boundary, including retransmission/handoff.
+// Copy only changed containers. Never rewrite persisted transcripts or erase hydrated child metadata.
+export function renderConversation(state) {
+  const renderTurn = turn => {
+    if (!Array.isArray(turn?.items)) return turn;
+    const items = turn.items.map(renderItem);
+    return items.some((item, i) => item !== turn.items[i]) ? { ...turn, items } : turn;
+  };
+  let result = state;
+  if (Array.isArray(state.turns)) {
+    const turns = state.turns.map(renderTurn);
+    if (turns.some((turn, i) => turn !== state.turns[i])) result = { ...result, turns };
+  }
+  const history = state.turnHistory?.history;
+  if (history?.entitiesByKey) {
+    let changed = false;
+    const entitiesByKey = Object.fromEntries(Object.entries(history.entitiesByKey).map(([key, turn]) => {
+      const rendered = renderTurn(turn); if (rendered !== turn) changed = true; return [key, rendered];
+    }));
+    if (changed) result = { ...result, turnHistory: { ...state.turnHistory, history: { ...history, entitiesByKey } } };
+  }
+  return result;
 }
 
 export function conversationState(thread, settings, title) {

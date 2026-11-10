@@ -44,7 +44,7 @@ export async function retainedOwner(root, id, writers = writerPids) {
 export async function readOwnerOutcome(root, args, command = 'archive') {
   const state = await new Operations(ownerOperationDirectory(root)).read(args.requestId);
   if (!state) return null;
-  const expected = digest(JSON.stringify([command, args.threadId.toLowerCase()]));
+  const expected = digest(JSON.stringify([command, args.threadId.toLowerCase(), ...(args.expectedTurnId ? [args.expectedTurnId] : [])]));
   if (state.fingerprint !== expected || state.threadId !== args.threadId) throw error('REQUEST_ID_CONFLICT', 'Owner operation identity does not match this request.');
   const { fingerprint, ...result } = state;
   return result;
@@ -78,13 +78,13 @@ export function requestOwner(record, command, args, { signal, timeoutMs = 35000 
   });
 }
 
-export async function serveOwner({ root, threadId, serverPid, handle, afterReply = () => {} }) {
+export async function serveOwner({ root, threadId, serverPid, handle, afterReply = () => {}, capabilities = {} }) {
   validateThread(threadId);
   await privateDirectory(join(root, 'background'));
   // Short private path also works when the configured state root exceeds Unix socket path limits.
   const directory = await mkdtemp(join(tmpdir(), 'mcd-owner-')); await chmod(directory, 0o700);
   const record = { version: 1, threadId, pid: process.pid, serverPid, generation: randomUUID(),
-    token: randomBytes(32).toString('hex'), endpoint: join(directory, 'control.sock') };
+    token: randomBytes(32).toString('hex'), endpoint: join(directory, 'control.sock'), capabilities };
   const clients = new Set(); let closing = false;
   const server = net.createServer(socket => {
     clients.add(socket); socket.on('error', () => {}); socket.on('close', () => clients.delete(socket));
@@ -110,8 +110,10 @@ export async function serveOwner({ root, threadId, serverPid, handle, afterReply
             if (!Array.isArray(query.expectedThreadIds) || query.expectedThreadIds.length > 1000) throw error('INVALID_ARGUMENT', 'Invalid archive scope.');
             for (const id of query.expectedThreadIds) validateThread(id);
           }
+          if (query.expectedTurnId !== undefined && (typeof query.expectedTurnId !== 'string' || !query.expectedTurnId || !capabilities.expectedTurnArchive)) throw error('INVALID_ARGUMENT', 'Guarded archival is unsupported or the expected turn is invalid.');
           const result = await handle(query.command, { requestId: query.requestId, threadId,
-            ...(query.expectedThreadIds ? { expectedThreadIds: query.expectedThreadIds } : {}) });
+            ...(query.expectedThreadIds ? { expectedThreadIds: query.expectedThreadIds } : {}),
+            ...(query.expectedTurnId ? { expectedTurnId: query.expectedTurnId } : {}) });
           const reply = JSON.stringify({ generation: record.generation, threadId, result }) + '\n';
           // A disconnected caller must not prevent confirmed archival/release cleanup.
           if (!socket.destroyed) socket.end(reply, () => { void afterReply(result); });

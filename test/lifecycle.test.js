@@ -16,7 +16,7 @@ async function fixture(t, options = {}) {
   const server = async (config, fn) => fn({ request: async (method, params) => {
     calls.push([method, params]);
     if (options.rejectRead && method === 'thread/read') throw rpcRejection(method, params, { code: -32600, message: `thread not loaded: ${params.threadId}` });
-    if (method === 'thread/read') return { thread: { id: threadId, ephemeral: false } };
+    if (method === 'thread/read') return { thread: { id: threadId, ephemeral: false, ...(options.turns ? { turns: options.turns } : {}) } };
     if (method === 'thread/list') return { data: params.archived ? [] : [{ id: childId }], nextCursor: null };
     if (options.lost) throw new Error('lost reply');
     config.onNotification({ method: method === 'thread/archive' ? 'thread/archived' : 'thread/deleted', params: { threadId } });
@@ -24,6 +24,33 @@ async function fixture(t, options = {}) {
   } });
   return { calls, stateDirectory, run: createLifecycle({ stateDirectory, server, writers: options.writers ?? (async () => []), inspect: options.inspect ?? (async () => { throw Error('unknown owner'); }) }) };
 }
+test('automatic archive checks the reviewed turn again under lifecycle locks', async t => {
+  for (const turn of [{ id: 'reviewed', status: 'completed' }, { id: 'newer', status: 'completed' }, { id: 'reviewed', status: 'failed' }]) {
+    const f = await fixture(t, { turns: [turn] });
+    const args = { threadId, requestId: 'guarded-archive-001', expectedTurnId: 'reviewed' };
+    if (turn.id === 'reviewed' && turn.status === 'completed') {
+      assert.equal((await f.run('archive', args)).phase, 'archived');
+      assert.equal((await f.run('archive', args)).replayed, true);
+      await assert.rejects(f.run('archive', { ...args, expectedTurnId: 'another' }), { code: 'REQUEST_ID_CONFLICT' });
+    } else {
+      await assert.rejects(f.run('archive', args), { code: 'TURN_CHANGED' });
+      assert.equal(f.calls.some(([method]) => method === 'thread/archive'), false);
+    }
+  }
+});
+
+test('automatic archival refuses a legacy owner that would ignore the exact-turn guard', async t => {
+  const f = await fixture(t);
+  let submitted = false;
+  const run = createLifecycle({ stateDirectory: f.stateDirectory,
+    server: async (_config, read) => read({ request: async method => method === 'thread/list' ? { data: [] }
+      : { thread: { id: threadId, ephemeral: false, turns: [{ id: 'reviewed', status: 'completed' }] } } }),
+    writers: async () => [123], inspect: async () => ({ owner: 'background', runtimeStatus: 'idle', status: 'completed', pendingRequests: 0 }),
+    findOwner: async () => ({ capabilities: {} }), ownerRequest: async () => { submitted = true; },
+  });
+  await assert.rejects(run('archive', { threadId, requestId: 'old-owner-guard-001', expectedTurnId: 'reviewed' }), { code: 'OWNER_UPGRADE_REQUIRED' });
+  assert.equal(submitted, false);
+});
 for (const operation of ['archive']) {
   test(`${operation}: sends once, persists receipt, exposes operation status and rejects conflicting IDs`, async t => {
     const f = await fixture(t);

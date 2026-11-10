@@ -78,7 +78,7 @@ for (const mode of ['normal', 'owner-replacement', 'worker-restart']) test(`nati
   client = new Client({ name: 'desktop-notifications-test', version: '1.0.0' });
   await client.connect(new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL('../src/notifications.js', import.meta.url))], env, stderr: 'pipe' }));
   assert.equal(client.getServerCapabilities().experimental, undefined, 'no Channels capability or launch flag needed');
-  assert.equal((await client.listTools()).tools.length, 3);
+  assert.equal((await client.listTools()).tools.length, 4);
   const premature = await client.callTool({ name: 'codex_review_complete', arguments: { sessionId, eventId, verdict: 'passed', summary: 'Skipped reading.' } });
   assert.equal(premature.isError, true);
   assert.match(premature.content[0].text, /RESULT_NOT_READ/);
@@ -87,6 +87,12 @@ for (const mode of ['normal', 'owner-replacement', 'worker-restart']) test(`nati
   assert.equal(JSON.parse(final.content[0].text).turnId, turnId);
   const ack = await client.callTool({ name: 'codex_review_complete', arguments: { sessionId, eventId, verdict: 'passed', summary: 'Isolated hook fixture checked.' } });
   assert.ok(!ack.isError, JSON.stringify(ack));
+  const retained = await client.callTool({ name: 'codex_task_finalize', arguments: {
+    sessionId, eventId, mergeStatus: 'not_required', mainValidationStatus: 'not_required', followupRequired: false, keep: true,
+    evidence: 'The user requested retaining this test conversation.',
+  } });
+  assert.ok(!retained.isError, JSON.stringify(retained));
+  assert.equal(JSON.parse(retained.content[0].text).phase, 'retained');
   const repeated = await hook({ session_id: sessionId, hook_event_name: 'SessionStart' }); assert.equal(repeated.code, 0);
   const diagnostic = await client.callTool({ name: 'codex_notification_status', arguments: { sessionId } });
   assert.equal(JSON.parse(diagnostic.content[0].text).tasks[0].state, 'reviewed');

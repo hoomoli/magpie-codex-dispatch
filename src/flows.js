@@ -88,7 +88,8 @@ export function createFlows(options = {}) {
       if (['archive', 'delete'].includes(state.operation)) {
         const { fingerprint: _, ...result } = state;
       if (state.route === 'background-owner' && state.operation === 'archive') {
-        const receipt = await readOwnerOutcome(directory, { requestId: args.requestId, threadId: state.threadId });
+        const receipt = await readOwnerOutcome(directory, { requestId: args.requestId, threadId: state.threadId,
+          ...(state.expectedTurnId ? { expectedTurnId: state.expectedTurnId } : {}) });
         if (receipt) return { ...result, ...receipt };
       }
         if (state.operation === 'delete') {

@@ -22,7 +22,7 @@ async function fixture(t, options = {}) {
   const writers = options.writers ?? (async value => value === id ? [123] : []);
   const rpc = { request: async (method, params) => {
     calls.push([method, params]);
-    if (method === 'thread/read') return { thread: { id, ephemeral: false, status: { type: 'idle' }, turns: [] } };
+    if (method === 'thread/read') return { thread: { id, ephemeral: false, status: { type: 'idle' }, turns: options.turns ?? [] } };
     if (method === 'thread/list') return { data: options.descendant && !params.archived ? [{ id: child }] : [], nextCursor: null };
     if (method === 'thread/archive') { events.push('submit'); return options.archive?.(); }
     return { turn: { id: 'turn-test' } };
@@ -35,6 +35,17 @@ async function fixture(t, options = {}) {
   } });
   return { root, runtime, run, calls, events, writers, rpc };
 }
+
+test('guarded owner archival retains a newer turn and forwards the guard through authenticated control', async t => {
+  const f = await fixture(t, { turns: [{ id: 'newer', status: 'completed' }] });
+  const guarded = { ...args, expectedTurnId: 'reviewed' };
+  const control = await serveOwner({ root: f.root, threadId: id, serverPid: 123,
+    capabilities: { expectedTurnArchive: true }, handle: f.run });
+  t.after(() => control.close());
+  await assert.rejects(requestOwner(control.record, 'archive', guarded), { code: 'TURN_CHANGED' });
+  assert.equal(f.events.length, 0);
+  assert.equal((await readOwnerOutcome(f.root, guarded)).errorCode, 'TURN_CHANGED');
+});
 
 test('owner archives once, journals ACK before notifying, and replays durably across handler reload', async t => {
   const f = await fixture(t);

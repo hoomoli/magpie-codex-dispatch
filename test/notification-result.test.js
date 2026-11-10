@@ -123,11 +123,12 @@ for (const transport of ['notifications', 'channel']) test(`${transport} refuses
   await client.connect(new StdioClientTransport({ command: process.execPath,
     args: [fileURLToPath(new URL(`../src/${transport}.js`, import.meta.url))],
     env: { ...process.env, MAGPIE_CODEX_STATE_DIR: root, MAGPIE_CODEX_CHANNEL_ID: sessionId }, stderr: 'pipe' }));
-  for (const name of ['codex_notification_result', 'codex_review_complete']) {
+  for (const name of ['codex_notification_result', 'codex_review_complete', 'codex_task_finalize']) {
     const response = await client.callTool({ name, arguments: { ...(transport === 'notifications' ? { sessionId } : {}), eventId: 'saved-event',
-      ...(name === 'codex_review_complete' ? { verdict: 'passed', summary: 'Unchecked' } : {}) } });
+      ...(name === 'codex_review_complete' ? { verdict: 'passed', summary: 'Unchecked' } : {}),
+      ...(name === 'codex_task_finalize' ? { mergeStatus: 'completed', mainValidationStatus: 'passed', followupRequired: false, keep: false, evidence: 'Unchecked' } : {}) } });
     assert.equal(response.isError, true);
     assert.match(response.content[0].text, /NOTIFICATION_UPGRADE_REQUIRED/);
   }
-  assert.ok(!calls.includes('result')); assert.ok(!calls.includes('review'));
+  assert.ok(!calls.includes('result')); assert.ok(!calls.includes('review')); assert.ok(!calls.includes('finalize'));
 });

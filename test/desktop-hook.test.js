@@ -117,6 +117,20 @@ test('installer writes private backups and does not duplicate registration', asy
   assert.equal(JSON.parse(await readFile(join(home, '.claude.json'))).existing, true);
 });
 
+test('explicit remote-install migration replaces only the approved prior hooks and server', async () => {
+  const original = configuration({ hooks: { PostToolUse: [{ matcher: 'Edit', hooks: [{ type: 'command', command: 'unrelated' }] }] } }, {}, '/local/src', '/node');
+  assert.throws(() => configuration(original.settings, original.config, '/remote/src', '/node'), /unrelated/);
+  const migrated = configuration(original.settings, original.config, '/remote/src', '/node', { migrateFrom: ['/local/src'] });
+  assert.equal(migrated.settings.hooks.PostToolUse.length, 2);
+  for (const event of ['PreToolUse', 'PostToolUse', 'SessionStart']) {
+    const own = migrated.settings.hooks[event].flatMap(g => g.hooks).filter(h => h.args?.some(a => a.endsWith('/desktop-hook.js')));
+    assert.equal(own.length, 1); assert.deepEqual(own[0].args, ['/remote/src/desktop-hook.js']);
+  }
+  assert.deepEqual(migrated.config.mcpServers['codex-notifications'].args, ['/remote/src/notifications.js']);
+  assert.deepEqual(configuration(migrated.settings, migrated.config, '/remote/src', '/node', { migrateFrom: ['/local/src'] }), migrated);
+  assert.throws(() => configuration(original.settings, original.config, '/remote/src', '/node', { migrateFrom: ['/another/src'] }), /unrelated/);
+});
+
 
 test('watch transport recovery rearms the same binding without registering or dispatching', async () => {
   const calls = []; let watches = 0;

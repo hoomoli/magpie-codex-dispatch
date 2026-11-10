@@ -15,8 +15,9 @@ export function createLifecycle({ stateDirectory = join(homedir(), '.local', 'st
   return async (operation, args, { abort } = {}) => {
     if (operation !== 'archive') throw new DispatchError('UNSUPPORTED_OPERATION', 'Only archive is supported; permanent deletion has been removed.');
     validateThread(args.threadId); requestKey(args.requestId);
+    if (args.expectedTurnId !== undefined && (typeof args.expectedTurnId !== 'string' || !args.expectedTurnId)) throw new DispatchError('INVALID_ARGUMENT', 'expectedTurnId must identify the reviewed turn.');
     return store.locked(args.requestId, async () => {
-      const fingerprint = digest(JSON.stringify([operation, args.threadId.toLowerCase()]));
+      const fingerprint = digest(JSON.stringify([operation, args.threadId.toLowerCase(), ...(args.expectedTurnId ? [args.expectedTurnId] : [])]));
       const old = await store.read(args.requestId);
       if (old) {
         if (old.fingerprint !== fingerprint) throw new DispatchError('REQUEST_ID_CONFLICT', 'This requestId belongs to different arguments.');
@@ -32,6 +33,7 @@ export function createLifecycle({ stateDirectory = join(homedir(), '.local', 'st
       const affected = new Set(), unlocks = [];
       let submitted = false;
       const state = { operation, requestId: args.requestId, threadId: args.threadId, fingerprint,
+        ...(args.expectedTurnId ? { expectedTurnId: args.expectedTurnId } : {}),
         phase: 'preparing', stage: 'connect', completed: false };
       const save = () => store.save(args.requestId, state);
       const publicResult = () => { const { fingerprint: _, ...result } = state; return result; };
@@ -79,7 +81,15 @@ export function createLifecycle({ stateDirectory = join(homedir(), '.local', 'st
             await save();
             return publicResult();
           }
+          if (args.expectedTurnId) {
+            const latest = (await client.request('thread/read', { threadId: args.threadId, includeTurns: true })).thread;
+            const turn = latest?.turns?.at(-1);
+            if (latest?.id !== args.threadId || turn?.id !== args.expectedTurnId || turn.status !== 'completed' || turn.error) {
+              throw new DispatchError('TURN_CHANGED', 'The latest turn is no longer the successfully reviewed turn. Nothing was archived.');
+            }
+          }
           if (backgroundOwner) {
+            if (args.expectedTurnId && !backgroundOwner.capabilities?.expectedTurnArchive) throw new DispatchError('OWNER_UPGRADE_REQUIRED', 'The retained owner cannot guard archival against a new turn. Preserve it and arrange safe owner action.');
             Object.assign(state, { route: 'background-owner', ownerGeneration: backgroundOwner.generation,
               phase: 'outcome_unknown', stage: 'route_owner', submitted: true });
             await save(); submitted = true;
