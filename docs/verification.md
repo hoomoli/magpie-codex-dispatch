@@ -2,6 +2,27 @@
 
 # Verification / 验收记录
 
+## Version 0.0.12 (2026-11-10)
+
+- Publication was explicitly requested by the owner. The complete Claude/UI release gate remains **CLOSED**; this release does not claim a new full acceptance pass or resolution of unrelated known findings.
+- Completion remains execution-driven: the notification worker persists the exact terminal event before waking the originating Claude session. Added `codex_notification_result` on both notification transports to retrieve the saved event's exact thread/turn. The worker durably records retrieval metadata without copying task output into the notification queue.
+- Review is now gated in the worker: no acknowledgment before exact terminal-result retrieval; failed, interrupted, or errored execution cannot receive `passed`. Attention and another route's events cannot unlock completion review. Previous review receipts remain replayable. Updated clients reject older workers without `capabilities.reviewRequiresResult` rather than silently bypassing the gate.
+- Included previously unpublished owner-loss recovery, bounded native-hook transport recovery, separate approval/input attention events, and opt-in `executionMode: desktop` for new tasks. Default background execution, request identity, explicit permissions, and safe ownership boundaries remain intact. Unopened background threads still lack native sidebar runtime synchronization.
+- Validation on the v0.0.12 working tree: all 157 automated tests passed, zero failures/skips; syntax and whitespace checks and both isolated real-AppServer lifecycle scripts passed. The scripts create private empty fixtures and do not start model turns or mutate existing user chats. Package contents were checked with `npm pack --dry-run` before publication.
+- The new result/review flow is covered by actual stdio MCP client/server tests with simulated desktop IPC, offline replay, worker restart, exact-turn identity, attention rejection, legacy review replay and old-worker refusal. A fresh authenticated Claude wakeup/review and native sidebar/approval presentation were not exercised for this release.
+- The owner's personal Claude and Codex policies were updated separately with backups; they are not packaged or committed. Claude reads the event-bound result before review and handles attention without automatic approval. Delegated Codex work reports validation evidence and relies on plugin completion events rather than direct callbacks.
+- Existing workers retain loaded code. Do not terminate active execution workers or live notification clients to force an upgrade. New workers use the released code; an old worker requires a safe reload before using the gated review protocol. Reload/reconnect existing Claude MCP clients to discover the new result tool.
+
+## Notification owner recovery (2026-11-09, unpublished)
+
+- Found real accepted tasks still marked `watching` after their exact turns had ended. Their older notification workers remained connected to the shared IPC router and had not recorded owner loss.
+- Desktop followers now invalidate a disconnected execution owner and rediscover ownership. Monitoring can recover an exact terminal background receipt or writerless persisted turn after live connection failure; a writer attaching during the history read keeps the result unresolved.
+- New native hook watchers recover transport disconnection by rearming the same binding within the original deadline, with bounded retries and stable event IDs. Logical errors do not retry and task submission is never replayed.
+- Regression coverage includes an owner replacement while the router and native hooks stay connected, notification-worker restart during an existing hook wait, exact-turn history recovery, writer races, and bounded transport recovery. Live Claude wakeup and review remain separately observed operational evidence.
+
+- Local integration passed all 146 tests (138 for the isolated notification fix). Recovered 9 previously missing terminal turns across 4 Claude sessions without new task registrations. Three active sessions reacted and acknowledged 7 recovered turns; 2 recovered turns in one older session remain pending a receiver/session resume. Already-running legacy hooks emitted their normal disconnect diagnostic during the one-time worker replacement; new hooks have bounded transport recovery.
+- Completion reminders explicitly delegate additional tests/builds/checks to Codex under the local Claude rules. Operational recovery observed one old-context Claude repository check before this reminder was tightened; it is not evidence that every resumed session had already reloaded local policy.
+
 ## Version 0.0.11 (2026-11-09)
 
 - Fixed desktop render adaptation for background subagent tool items: app-server `receiverThreadIds` are now expanded into `receiverThreads` entries with explicit null thread metadata, on both item start and completion. Native desktop rendering expects this collection; raw app-server items are not render-ready.

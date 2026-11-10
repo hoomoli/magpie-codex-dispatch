@@ -23,7 +23,8 @@ export default async function MagpieCodexDispatch() {
     async execute(args, context) {
       try {
         if (operation === 'plugin_info') return JSON.stringify({ name: pluginName, pluginVersion, loadedAt, moduleUrl,
-          capabilities: { optionalCreatePin: true, pinDefault: false },
+          capabilities: { optionalCreatePin: true, pinDefault: false, executionModes: ['background', 'desktop'], attentionNotifications: true,
+            backgroundSidebarRuntimeSync: false },
           lifecycle: { archiveScope: 'background-owner-or-unattached', backgroundOwnerArchive: true, desktopHeldArchive: false,
             backgroundRetention: 'until-archive-or-handoff', maxBackgroundOwners: ownerLimit,
             permanentDelete: false, sidebarRefresh: 'notification-after-ack' } });
@@ -43,8 +44,9 @@ export default async function MagpieCodexDispatch() {
     codex_archive: define('archive', 'Archive an idle persisted thread through its verified retained plugin background owner, or archive a writerless persisted subtree. Active/awaiting-input threads and held descendants are refused. Desktop-held or unconfirmed owners return owner_action_required without submission; never force release or restart apps. Fixed request IDs are durable and idempotent; unknown outcomes are never automatically resubmitted. completed:true confirms server ACK; desktopNotified confirms the real notification was written after ACK, not visual observation. Permanent deletion is not offered.', { threadId, requestId }, ['threadId', 'requestId']),
     codex_plugin_info: define('plugin_info', `Report the loaded ${pluginName} v${pluginVersion} and module load time. No desktop connection or task execution. Use this to verify a plugin reload.`, {}, []),
     codex_projects: define('projects', 'List canonical Codex project IDs and workspace roots. Use these IDs rather than desktop UI project IDs.', {}, []),
-    codex_create_task: define('create', 'Create and execute a task in the background in the selected project or cwd. Refresh the ordinary desktop sidebar without navigating. Pin only when pin:true is explicitly supplied. The desktop follows live progress when viewed. No manual opening is required to start execution. Reuse identical arguments and requestId after an uncertain outcome. Acceptance is not completion.', {
+    codex_create_task: define('create', 'Create a task in the selected project or cwd. Default background execution refreshes history without navigation; unopened background threads do not have native sidebar activity indicators. Use executionMode:desktop to open the chat and execute through its actual desktop owner for native status and approval UI. Pin only with pin:true. Reuse identical arguments and requestId on retries. Acceptance is not completion.', {
       requestId, prompt, permissionMode,
+      executionMode: { type: 'string', enum: ['background', 'desktop'], description: 'Default background: detached worker, no navigation, attention notifications via Claude hooks. Desktop: open the chat, verify native ownership, then dispatch; provides native activity and approval UI. Preserve this argument on retries.' },
       pin: { type: 'boolean', description: 'Optional: pin this new thread before execution when true. Omitted or false leaves it unpinned. Applied once at creation; retries and later turns do not override manual unpinning.' },
       title: { type: 'string', maxLength: 160 },
       projectId: { type: 'string', description: 'Canonical ID from codex_projects.' },

@@ -2,7 +2,7 @@
 
 [中文说明](README.zh-CN.md) · [Ownership contract / 控制权规范](docs/ownership.md)
 
-Current release version: **0.0.11** — retained background execution, desktop follower streaming, event-driven Claude review, stored-history status, and archival through the original background owner or an unattached subtree. Permanent deletion and direct archival of desktop-owned chats remain outside the supported scope.
+Current release version: **0.0.12** — retained background execution, desktop follower streaming, event-driven Claude review, stored-history status, and archival through the original background owner or an unattached subtree. Permanent deletion and direct archival of desktop-owned chats remain outside the supported scope.
 
 The display name is `magpie-codex-dispatch`; the version belongs in Magpie’s separate version badge. Local-directory installs hide that badge, so use `codex_plugin_info` to verify their loaded version. Git-based installs also show a commit identifier managed by Magpie.
 
@@ -27,9 +27,9 @@ Claude / other MCP client
     -> completion event: wake Claude for review
 ```
 
-New tasks execute in a detached worker using the app-bundled AppServer. The worker verifies effective permissions, publishes native follower snapshots, and forwards approvals and guarded interruptions. The desktop displays progress without a separate dashboard. Existing desktop-thread dispatch and explicit Companion handoff retain their native-owner path. New tasks are never opened automatically. Pinning is opt-in through `pin: true` on `codex_create_task`.
+By default, new tasks execute in a detached worker using the app-bundled AppServer. The worker verifies effective permissions, publishes native follower snapshots, and forwards approvals and guarded interruptions. The desktop displays progress without a separate dashboard. Existing desktop-thread dispatch and explicit Companion handoff retain their native-owner path. Background tasks are not opened automatically. `executionMode: "desktop"` opens the new chat and uses its verified native owner. Pinning is opt-in through `pin: true` on `codex_create_task`.
 
-Release acceptance remains **CLOSED**. The owner explicitly accepted the unresolved findings and authorized this release. All required local checks passed; see the [0.0.11 release record](docs/verification.md).
+Release acceptance remains **CLOSED**. Publication was requested by the owner; unresolved findings and incomplete live acceptance remain documented. All required local checks passed; see the [0.0.12 release record](docs/verification.md).
 
 ## Install and connect Claude
 
@@ -70,7 +70,7 @@ Plugin-specific MCP exposes these names. The combined endpoint prefixes them wit
 | --- | --- | --- |
 | `codex_plugin_info` | none | Loaded plugin version and module load time; no desktop access |
 | `codex_projects` | none | Canonical project IDs, names and workspace roots |
-| `codex_create_task` | `requestId`, `prompt`; project selection below | Create and execute in the background; refresh sidebar without navigation |
+| `codex_create_task` | `requestId`, `prompt`; project selection below | Create in background by default; optional desktop ownership for native activity/approval UI |
 | `codex_ownership` | `threadId` | Desktop ownership or external/unattached writer information |
 | `codex_handoff` | `threadId`, `requestId`, optional `sourceEndpoint` | Release one idle Companion thread, wait for unload and attach desktop |
 | `codex_recover_creation` | `requestId`, `threadId` | Verify source marker/project/cwd and bind an uncertain creation; does not dispatch |
@@ -112,9 +112,11 @@ For idle desktop-held chats, a locally verified alternative is to [delegate an e
 
 Select an exact unique `projectName` or canonical `projectId` from `codex_projects`. Desktop UI project IDs can differ from backend IDs. One project root supplies the working directory; multiple roots require an explicit `cwd` inside a root. An explicit absolute `cwd` without a project creates a projectless thread. No implicit current-project default is used. Paths are resolved through filesystem aliases and checked before creation. This creates a **conversation**, not a new project.
 
-Optional `title` is limited to 160 characters and defaults to `Magpie task`. The new empty thread is archived and immediately restored once, before execution, to produce a genuine catalog event. After the background worker owns the restored thread and starts the task, it forwards that event to refresh the sidebar without navigation. No existing or active user thread is cycled.
+Optional `title` is limited to 160 characters and defaults to `Magpie task`. In background mode, the new empty thread is archived and immediately restored once, before execution, to produce a genuine catalog event. After the background worker owns the restored thread and starts the task, it forwards that event to refresh the sidebar without navigation. No existing or active user thread is cycled.
 
 ### Permission modes
+
+`codex_create_task` accepts optional `executionMode: "desktop"` to open the chat, confirm desktop ownership, and dispatch through that owner for native activity and approval UI. The default `"background"` runs without navigation; unopened background chats do not have native sidebar runtime indicators. Preserve the mode and request ID on retries; changing modes cannot create a replacement task under the same ID. Existing running threads are not migrated or interrupted. See [attention and execution modes](docs/background-attention.md).
 
 `codex_create_task` accepts optional `pin: true` to place the new thread in the native desktop pinned section before execution. Omitted or `false` keeps the existing unpinned behavior. A successful requested pin returns `pinned: true` and `pinConfirmed: true` after server readback; this confirms persisted membership, not visual observation. Unsupported or unconfirmed pinning stops before task submission and preserves the created thread ID in `codex_operation_status`; do not create a replacement automatically. Pinning is applied once: replaying an accepted request or sending later turns does not restore a pin manually removed by the user. Preserve the original `pin` argument and request ID on retries.
 
@@ -217,4 +219,4 @@ The private background directory contains request fingerprints, worker receipts,
 
 An unexpected worker crash does not automatically re-run a task: inspect the saved operation and native thread. Unsupported server requests receive an explicit error, never automatic approval. Desktop approval, input, interrupt and next-turn commands use the same worker while it owns the thread; ordinary desktop ownership can resume after it exits. Private IPC versions are checked and remain app-version dependent. Large histories that exceed the 32 MiB frame limit cannot be streamed by this version; work is not replayed to compensate.
 
-`codex_handoff` still explicitly opens existing Companion sessions. The no-navigation guarantee applies to `codex_create_task`. Legacy pending creation IDs are retained and refused for automatic migration rather than duplicated.
+`codex_handoff` still explicitly opens existing Companion sessions. The no-navigation guarantee applies to background-mode `codex_create_task`; desktop mode explicitly opens the new chat. Legacy pending creation IDs are retained and refused for automatic migration rather than duplicated.

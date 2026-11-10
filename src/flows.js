@@ -1,4 +1,5 @@
 import { validatePin, pinNewThread } from './pinning.js';
+import { reserveExecutionMode } from './execution-mode.js';
 import { createBackground, backgroundDirectory } from './background.js';
 import { requestedMode, permissionSettings } from './permissions.js';
 import { homedir } from 'node:os';
@@ -17,6 +18,7 @@ function validate(operation, args) {
   if (operation === 'handoff') validateThread(args.threadId);
   if (operation === 'create') {
     requestedMode(args); validatePin(args);
+    if (args.executionMode !== undefined && !['background', 'desktop'].includes(args.executionMode)) throw new DispatchError('INVALID_ARGUMENT', 'executionMode must be background or desktop.');
     if (typeof args.prompt !== 'string' || !args.prompt.trim() || Buffer.byteLength(args.prompt) > 65536) throw new DispatchError('INVALID_ARGUMENT', 'prompt must contain 1-65536 UTF-8 bytes.');
     if (args.title !== undefined && (typeof args.title !== 'string' || !args.title.trim() || args.title.length > 160)) throw new DispatchError('INVALID_ARGUMENT', 'title must contain 1-160 characters.');
     for (const key of ['projectId', 'projectName', 'cwd']) if (args[key] !== undefined && (typeof args[key] !== 'string' || !args[key])) throw new DispatchError('INVALID_ARGUMENT', `${key} must be a nonempty string.`);
@@ -27,6 +29,7 @@ function fingerprint(operation, args) {
   const values = [operation, ...keys.map(key => args[key] ?? null)];
   if (operation === 'create' && args.permissionMode !== undefined) values.push(args.permissionMode);
   if (operation === 'create' && args.pin === true) values.push({ pin: true });
+  if (operation === 'create' && args.executionMode === 'desktop') values.push({ executionMode: 'desktop' });
   return digest(JSON.stringify(values));
 }
 function publicState(state) {
@@ -48,8 +51,15 @@ export function createFlows(options = {}) {
   const inspect = options.inspectOwnership ?? inspectOwnership;
   const background = options.backgroundCreate ?? createBackground({ stateDirectory: directory, socketPath: options.socketPath, resolve });
   return async function execute(operation, args = {}, { abort } = {}) {
-    if (operation === 'create' && options.background !== false) {
+    if (operation === 'create') {
       validate(operation, args);
+      await reserveExecutionMode(directory, args.requestId,
+        args.executionMode === 'desktop' || options.background === false ? 'desktop' : 'background', abort);
+    }
+    if (operation === 'create' && args.executionMode === 'desktop') {
+      if (await new Operations(backgroundDirectory(directory)).read(args.requestId)) throw new DispatchError('REQUEST_ID_CONFLICT', 'A background creation already owns this request ID. Do not change executionMode on retries.');
+    }
+    if (operation === 'create' && options.background !== false && args.executionMode !== 'desktop') {
       const legacy = await store.read(args.requestId);
       if (legacy) {
         if (legacy.fingerprint !== fingerprint(operation, args)) throw new DispatchError('REQUEST_ID_CONFLICT', 'This ID belongs to different arguments.');
@@ -246,7 +256,7 @@ export function createFlows(options = {}) {
       await save({ phase: 'dispatching', reason: null });
       try {
         const receipt = await dispatch('dispatch', { threadId: state.threadId, prompt: args.prompt, requestId: `flow_${requestKey(args.requestId)}`, ...(args.permissionMode !== undefined ? { permissionMode: args.permissionMode } : args.sandbox !== undefined ? { sandbox: args.sandbox } : {}) }, { abort });
-        await save({ phase: 'accepted', accepted: true, completed: false, turnId: receipt.turnId, owner: 'desktop', permissions: receipt.permissions });
+        await save({ phase: 'accepted', accepted: true, completed: false, turnId: receipt.turnId, owner: 'desktop', executionMode: 'desktop', permissions: receipt.permissions });
       } catch (error) {
         await save({ phase: error.code === 'OUTCOME_UNKNOWN' ? 'dispatch_unknown' : 'waiting_dispatch', reason: error.code ?? 'DISPATCH_FAILED' });
         if (error.code !== 'OUTCOME_UNKNOWN') throw error;

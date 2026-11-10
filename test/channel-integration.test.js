@@ -86,6 +86,12 @@ for (const crash of [false, true]) test(`real stdio channel + detached worker: o
   assert.equal(ownerReads, readsBefore);
   await connect(); await until(() => events.length === 1);
   const eventId = events[0].params.meta.event_id;
+  const premature = await client.callTool({ name: 'codex_review_complete', arguments: { eventId, verdict: 'passed', summary: 'Skipped reading.' } });
+  assert.equal(premature.isError, true);
+  assert.match(premature.content[0].text, /RESULT_NOT_READ/);
+  const final = await client.callTool({ name: 'codex_notification_result', arguments: { eventId } });
+  assert.ok(!final.isError, JSON.stringify(final));
+  assert.equal(JSON.parse(final.content[0].text).turnId, turnId);
   const ack = await client.callTool({ name: 'codex_review_complete', arguments: { eventId, verdict: 'passed', summary: 'Isolated fixture reviewed.' } });
   assert.ok(!ack.isError, JSON.stringify(ack));
   await client.close(); await connect();

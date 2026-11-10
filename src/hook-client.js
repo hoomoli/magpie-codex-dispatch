@@ -19,7 +19,7 @@ export async function workerRequest(sessionId, method, args = {}, { timeoutMs = 
       await new Promise(resolve => setTimeout(resolve, 100));
     }
   }
-  if (!socket) throw new Error('Notification worker unavailable; no notification binding was confirmed.');
+  if (!socket) throw Object.assign(new Error('Notification worker unavailable; no notification binding was confirmed.'), { code: 'NOTIFICATION_UNAVAILABLE' });
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (error, value) => {
@@ -31,7 +31,7 @@ export async function workerRequest(sessionId, method, args = {}, { timeoutMs = 
       if (msg.id !== 1) return;
       finish(msg.error ? new Error(msg.error) : null, msg.result);
     });
-    socket.on('close', () => finish(new Error('Notification worker disconnected; saved work can be recovered.')));
+    socket.on('close', () => finish(Object.assign(new Error('Notification worker disconnected; saved work can be recovered.'), { code: 'NOTIFICATION_DISCONNECTED' })));
     send({ id: 1, method, args });
   });
 }

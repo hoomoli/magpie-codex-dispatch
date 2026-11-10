@@ -6,6 +6,8 @@ import { pluginVersion } from './version.js';
 import { acquireFileLock } from './locks.js';
 import { ChannelStore, routeDirectory, stateRoot, hash, readJSON, privateDirectory, atomicJSON } from './channel-store.js';
 import { CompletionMonitor } from './channel-monitor.js';
+import { pendingTaskEvents } from './attention.js';
+import { notificationResult } from './notification-result.js';
 import { workerSocket, wire } from './channel-wire.js';
 
 const id = process.argv[2];
@@ -31,17 +33,17 @@ function deliver() {
   for (const client of clients) {
     if (!client.watch) continue;
     const tasks = Object.values(store.data.tasks).filter(t => client.watch.keys === null || client.watch.keys.includes(t.key));
-    const events = tasks.filter(t => t.event && !t.review && !announced.has(t.event.eventId)).slice(0, 50).map(t => t.event);
+    const events = pendingTaskEvents(tasks).filter(e => !announced.has(e.eventId)).slice(0, 50);
     if (!events.length && tasks.some(t => !t.event && !t.review)) continue;
     for (const event of events) announced.add(event.eventId);
     client.send({ id: client.watch.id, result: { events } });
     client.watch = null;
   }
   if (!subscriber?.ready) return;
-  for (const task of store.pending()) {
-    if (subscriber.sent.has(task.event.eventId)) continue;
-    subscriber.sent.add(task.event.eventId);
-    subscriber.send({ event: task.event });
+  for (const event of pendingTaskEvents(Object.values(store.data.tasks))) {
+    if (subscriber.sent.has(event.eventId)) continue;
+    subscriber.sent.add(event.eventId);
+    subscriber.send({ event });
   }
 }
 function idle() {
@@ -86,11 +88,13 @@ const server = net.createServer(socket => {
       } else if (message.method === 'tools') result = Object.entries(tool).map(([name, t]) => ({ name, description: t.description, inputSchema: t.args }));
       else if (message.method === 'review') {
         result = await store.review(message.args.eventId, message.args.verdict, message.args.summary);
+      } else if (message.method === 'result') {
+        result = await notificationResult(store, message.args.eventId);
       } else if (message.method === 'status') {
-        result = { sessionId: id, totalTasks: Object.keys(store.data.tasks).length, pendingReviews: store.pending().length,
+        result = { sessionId: id, capabilities: { attentionNotifications: true, reviewRequiresResult: true }, totalTasks: Object.keys(store.data.tasks).length, pendingReviews: store.pending().length,
           tasks: Object.values(store.data.tasks).slice(-50).map(t => ({ requestId: t.requestId, threadId: t.threadId, turnId: t.turnId,
-          state: t.review ? 'reviewed' : t.event ? 'awaiting_review' : t.turnId ? 'watching' : 'awaiting_receipt',
-          event: t.event, review: t.review, lastMonitorError: errors.get(t.key) })) };
+          state: t.review ? 'reviewed' : t.event ? 'awaiting_review' : t.attention?.length ? 'awaiting_attention' : t.turnId ? 'watching' : 'awaiting_receipt',
+          attention: t.attention ?? [], event: t.event, resultRead: t.resultRead, review: t.review, lastMonitorError: errors.get(t.key) })) };
       } else if (message.method === 'call') {
         const { name, args } = message;
         if (!Object.hasOwn(tool, name)) throw new Error('Unknown tool.');

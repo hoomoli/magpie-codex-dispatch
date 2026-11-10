@@ -86,6 +86,7 @@ export class ChannelStore {
     return this.change(data => {
       const task = data.tasks[key];
       if (task.event || result.threadId !== task.threadId || result.turnId !== task.turnId) return false;
+      task.attention = [];
       task.event = { eventId: hash(`${task.threadId}:${task.turnId}`), threadId: task.threadId,
         turnId: task.turnId, status: result.status, hasError: result.hasError, finishedAt: new Date().toISOString() };
       const previous = Object.values(data.tasks).find(t => t.event?.eventId === task.event.eventId && t.review);
@@ -93,13 +94,51 @@ export class ChannelStore {
       return true;
     });
   }
+  setAttention(key, result) {
+    return this.change(data => {
+      const task = data.tasks[key];
+      if (!task || task.event || result.threadId !== task.threadId || result.turnId !== task.turnId) return false;
+      const next = (result.attentionRequests ?? []).map(({ requestId, method, kind }) => ({
+        eventId: hash(`attention:${task.threadId}:${task.turnId}:${method}:${requestId}`),
+        kind: 'attention', threadId: task.threadId, turnId: task.turnId,
+        requestId, method, status: kind === 'approval' ? 'waiting_on_approval' : 'waiting_on_input',
+      }));
+      if (JSON.stringify(task.attention ?? []) === JSON.stringify(next)) return false;
+      task.attention = next;
+      return true;
+    });
+  }
+  resultRead(eventId, result) {
+    if (typeof eventId !== 'string' || !eventId) throw new Error('A completion eventId is required.');
+    return this.change(data => {
+      const tasks = Object.values(data.tasks).filter(t => t.event?.eventId === eventId);
+      if (!tasks.length) throw new Error('Event does not belong to this Claude session.');
+      const event = tasks[0].event;
+      if (!result || result.threadId !== event.threadId || result.turnId !== event.turnId || result.turnFound !== true ||
+          result.status !== event.status || !['completed', 'failed', 'interrupted'].includes(result.status)) {
+        throw new Error('RESULT_UNCONFIRMED: The exact terminal turn could not be verified.');
+      }
+      // Persist proof of retrieval, never task output or instructions from it.
+      const receipt = { eventId, status: result.status, hasError: Boolean(result.hasError), readAt: new Date().toISOString() };
+      for (const task of tasks) task.resultRead = receipt;
+      return receipt;
+    });
+  }
   review(eventId, verdict, summary) {
+    if (typeof eventId !== 'string' || !eventId) throw new Error('A completion eventId is required.');
     if (!['passed', 'changes_requested', 'unable_to_review'].includes(verdict) || typeof summary !== 'string' || !summary.trim() || summary.length > 8000) throw new Error('A review verdict and summary (1–8000 characters) are required.');
     return this.change(data => {
       const tasks = Object.values(data.tasks).filter(t => t.event?.eventId === eventId);
       if (!tasks.length) throw new Error('Event does not belong to this Claude session.');
       const old = tasks.find(t => t.review)?.review;
       if (old && (old.verdict !== verdict || old.summary !== summary)) throw new Error('Review already recorded with a different result.');
+      if (!old) {
+        const read = tasks.find(t => t.resultRead?.eventId === eventId)?.resultRead;
+        if (!read) throw new Error('RESULT_NOT_READ: Call codex_notification_result for this event before submitting a review.');
+        if (verdict === 'passed' && (tasks[0].event.status !== 'completed' || tasks[0].event.hasError || read.hasError)) {
+          throw new Error('REVIEW_STATUS_CONFLICT: Failed, interrupted or errored execution cannot pass review.');
+        }
+      }
       const review = old ?? { verdict, summary, reviewedAt: new Date().toISOString() };
       for (const t of tasks) t.review = review;
       return review;

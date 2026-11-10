@@ -30,6 +30,8 @@ test('queue survives restart, excludes prompts/output, deduplicates completion, 
   assert.ok(!(await readFile(join(dir, 'queue.json'), 'utf8')).includes('secret prompt'));
   const event = recovered.pending()[0].event;
   await assert.rejects(recovered.review('unknown', 'passed', 'checked'), /belong/);
+  await assert.rejects(recovered.review(event.eventId, 'passed', 'Checked changes and tests.'), /RESULT_NOT_READ/);
+  await recovered.resultRead(event.eventId, { ...result(), turnFound: true });
   await recovered.review(event.eventId, 'passed', 'Checked changes and tests.');
   assert.equal(recovered.pending().length, 0);
   await recovered.review(event.eventId, 'passed', 'Checked changes and tests.');
@@ -113,4 +115,30 @@ test('desktop applies ordered patches and rejects revision gaps, wrong owners an
   unsafe.message({ type: 'broadcast', method: 'thread-stream-state-changed', version: 11, sourceClientId: 'owner', params: { hostId: 'local', conversationId: threadId,
     change: { type: 'patches', baseRevision: 1, revision: 2, patches: [{ op: 'add', path: ['__proto__','polluted'], value: true }] } } });
   assert.equal({}.polluted, undefined); assert.equal(errors.at(-1), 'PROTOCOL_MISMATCH');
+});
+
+test('desktop detects loss of its owner while the shared router connection remains open', () => {
+  const errors = [];
+  const desktop = new Desktop({ onDisconnect: error => errors.push(error.code) });
+  desktop.owner = 'old-owner'; desktop.threadId = threadId;
+  for (const params of [{ clientId: 'other-owner', status: 'disconnected' }, { clientId: 'old-owner', status: 'connected' }]) {
+    desktop.message({ type: 'broadcast', method: 'client-status-changed', params });
+  }
+  assert.deepEqual(errors, []);
+  desktop.message({ type: 'broadcast', method: 'client-status-changed', params: { clientId: 'old-owner', status: 'disconnected' } });
+  assert.deepEqual(errors, ['OWNER_DISCONNECTED']);
+});
+
+test('failed live connection recovers an exact terminal receipt before scheduling another attempt', async t => {
+  const { store } = await fixture(t);
+  let attempts = 0, events = 0;
+  const monitor = new CompletionMonitor({ store, retryMs: 5,
+    readTerminal: async (_root, thread, turn) => ({ threadId: thread, turnId: turn, status: 'completed', hasError: false }),
+    desktopFactory: hooks => ({ async connect() { attempts++; hooks.onDisconnect({ code: 'OWNER_DISCONNECTED' }); throw Object.assign(Error('owner gone'), { code: 'OWNER_DISCONNECTED' }); }, close() { hooks.onDisconnect({ code: 'CLOSED' }); } }),
+    onEvent: () => events++,
+  });
+  t.after(() => monitor.close()); monitor.refresh();
+  for (let n = 0; n < 40 && !store.pending().length; n++) await new Promise(r => setTimeout(r, 5));
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(store.pending().length, 1); assert.equal(events, 1); assert.equal(attempts, 1);
 });

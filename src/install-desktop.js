@@ -14,7 +14,7 @@ export function configuration(settings, config, directory, node = process.execPa
   for (const event of ['PreToolUse', 'PostToolUse', 'SessionStart']) {
     const groups = next.hooks[event] ?? [];
     next.hooks[event] = groups.map(group => ({ ...group, hooks: group.hooks.filter(h => !h.args?.some(a => a === hook)) })).filter(group => group.hooks.length);
-    next.hooks[event].push({ ...(event === 'SessionStart' ? {} : { matcher: event === 'PostToolUse' ? `${matcher}|^mcp__codex-notifications__codex_review_complete$` : matcher }), hooks: [{ type: 'command', command: node, args: [hook], timeout: event === 'PreToolUse' ? 15 : 86400, ...(event === 'PreToolUse' ? { onFailure: 'block' } : { asyncRewake: true }) }] });
+    next.hooks[event].push({ ...(event === 'SessionStart' ? {} : { matcher: event === 'PostToolUse' ? `${matcher}|^mcp__codex-notifications__codex_(review_complete|notification_status)$` : matcher }), hooks: [{ type: 'command', command: node, args: [hook], timeout: event === 'PreToolUse' ? 15 : 86400, ...(event === 'PreToolUse' ? { onFailure: 'block' } : { asyncRewake: true }) }] });
   }
   mcp.mcpServers ??= {};
   const previous = mcp.mcpServers['codex-notifications'];

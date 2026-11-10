@@ -13,10 +13,10 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(fn) { for (let i = 0; i < 200; i++) { if (await fn()) return; await pause(20); } throw new Error('Timed out'); }
 function frame(value) { const body = Buffer.from(JSON.stringify(value)), header = Buffer.alloc(4); header.writeUInt32LE(body.length); return Buffer.concat([header, body]); }
 
-test('native hook processes wait on events, wake once, recover unreviewed results and acknowledge via ordinary MCP', { timeout: 20000 }, async t => {
+for (const mode of ['normal', 'owner-replacement', 'worker-restart']) test(`native hook processes recover and wake (mode=${mode})`, { timeout: 20000 }, async t => {
   const root = await mkdtemp('/tmp/mcd-hook-'), sessionId = randomUUID(), threadId = randomUUID(), turnId = 'hook-test-turn';
   const sockets = new Set(), followers = new Set(), children = new Set();
-  let status = 'inProgress', reads = 0;
+  let status = 'inProgress', reads = 0, owner = 'owner';
   const server = net.createServer(socket => {
     sockets.add(socket); socket.on('error', () => {}); socket.on('close', () => { sockets.delete(socket); followers.delete(socket); });
     let buffer = Buffer.alloc(0);
@@ -26,10 +26,10 @@ test('native hook processes wait on events, wake once, recover unreviewed result
         const size = buffer.readUInt32LE(0), msg = JSON.parse(buffer.subarray(4, size + 4)); buffer = buffer.subarray(size + 4);
         if (msg.type === 'request') {
           reads++;
-          socket.write(frame({ type: 'response', requestId: msg.requestId, resultType: 'success', handledByClientId: 'owner', result: msg.method === 'initialize' ? { clientId: randomUUID() } : {} }));
+          socket.write(frame({ type: 'response', requestId: msg.requestId, resultType: 'success', handledByClientId: owner, result: msg.method === 'initialize' ? { clientId: randomUUID() } : {} }));
         } else if (msg.method === 'thread-stream-following-changed' && msg.params.following) {
           followers.add(socket);
-          socket.write(frame({ type: 'broadcast', sourceClientId: 'owner', method: 'thread-stream-state-changed', version: 11, params: { hostId: 'local', conversationId: threadId, change: { type: 'snapshot', revision: 1, conversationState: { id: threadId, turns: [{ turnId, status, items: [] }], requests: [] } } } }));
+          socket.write(frame({ type: 'broadcast', sourceClientId: owner, method: 'thread-stream-state-changed', version: 11, params: { hostId: 'local', conversationId: threadId, change: { type: 'snapshot', revision: 1, conversationState: { id: threadId, turns: [{ turnId, status, items: [] }], requests: [] } } } }));
         }
       }
     });
@@ -57,16 +57,34 @@ test('native hook processes wait on events, wake once, recover unreviewed result
   await until(() => followers.size === 1);
   const before = reads; await pause(150); assert.equal(reads, before, 'waiting performs no status polling');
   status = 'completed';
-  for (const socket of followers) socket.write(frame({ type: 'broadcast', sourceClientId: 'owner', method: 'thread-stream-state-changed', version: 11, params: { hostId: 'local', conversationId: threadId, change: { type: 'patches', baseRevision: 1, revision: 2, patches: [{ op: 'replace', path: ['turns', 0, 'status'], value: status }] } } }));
-  const results = await Promise.all([a, b]); assert.deepEqual(results.map(r => r.code).sort(), [0, 2]);
-  assert.equal(reads, before); assert.match(results.find(r => r.code === 2).stderr, /completion notification/);
+  if (mode === 'worker-restart') {
+    const info = JSON.parse(await readFile(join(root, 'channels', sessionId, 'worker.json')));
+    process.kill(info.pid, 'SIGTERM');
+  } else if (mode === 'owner-replacement') {
+    const previous = owner; owner = 'replacement-owner';
+    // Keep the router and waiting hook connections alive; only its owner went away.
+    for (const socket of followers) socket.write(frame({ type: 'broadcast', method: 'client-status-changed',
+      params: { clientId: previous, status: 'disconnected' } }));
+  } else {
+  for (const socket of followers) socket.write(frame({ type: 'broadcast', sourceClientId: owner, method: 'thread-stream-state-changed', version: 11, params: { hostId: 'local', conversationId: threadId, change: { type: 'patches', baseRevision: 1, revision: 2, patches: [{ op: 'replace', path: ['turns', 0, 'status'], value: status }] } } }));
+  }
+  const results = await Promise.all([a, b]);
+  if (mode === 'worker-restart') { assert.ok(results.some(r => r.code === 2)); assert.ok(results.every(r => [0, 2].includes(r.code))); }
+  else assert.deepEqual(results.map(r => r.code).sort(), [0, 2]);
+  assert.equal(reads, before + (mode === 'normal' ? 0 : 2)); assert.match(results.find(r => r.code === 2).stderr, /completion notification/);
   const recovered = await hook({ session_id: sessionId, hook_event_name: 'SessionStart' }); assert.equal(recovered.code, 2);
   const queue = JSON.parse(await readFile(join(root, 'channels', sessionId, 'queue.json')));
   const eventId = Object.values(queue.tasks)[0].event.eventId;
   client = new Client({ name: 'desktop-notifications-test', version: '1.0.0' });
   await client.connect(new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL('../src/notifications.js', import.meta.url))], env, stderr: 'pipe' }));
   assert.equal(client.getServerCapabilities().experimental, undefined, 'no Channels capability or launch flag needed');
-  assert.equal((await client.listTools()).tools.length, 2);
+  assert.equal((await client.listTools()).tools.length, 3);
+  const premature = await client.callTool({ name: 'codex_review_complete', arguments: { sessionId, eventId, verdict: 'passed', summary: 'Skipped reading.' } });
+  assert.equal(premature.isError, true);
+  assert.match(premature.content[0].text, /RESULT_NOT_READ/);
+  const final = await client.callTool({ name: 'codex_notification_result', arguments: { sessionId, eventId } });
+  assert.ok(!final.isError, JSON.stringify(final));
+  assert.equal(JSON.parse(final.content[0].text).turnId, turnId);
   const ack = await client.callTool({ name: 'codex_review_complete', arguments: { sessionId, eventId, verdict: 'passed', summary: 'Isolated hook fixture checked.' } });
   assert.ok(!ack.isError, JSON.stringify(ack));
   const repeated = await hook({ session_id: sessionId, hook_event_name: 'SessionStart' }); assert.equal(repeated.code, 0);

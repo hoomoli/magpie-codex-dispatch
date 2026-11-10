@@ -1,4 +1,5 @@
 import { DispatchError } from './errors.js';
+import { attentionRequests } from './attention.js';
 import net from 'node:net';
 import { permissionSummary, nextPermissions } from './permissions.js';
 import { lstat } from 'node:fs/promises';
@@ -134,6 +135,11 @@ export class Desktop {
       this.fail(new DispatchError('DISCONNECTED', 'Desktop IPC was reset.'));
       return;
     }
+    if (this.owner && message.method === 'client-status-changed' &&
+        message.params?.clientId === this.owner && message.params.status === 'disconnected') {
+      this.fail(new DispatchError('OWNER_DISCONNECTED', 'The execution owner disconnected. Reconnect for a fresh owner and snapshot.'));
+      return;
+    }
     if ((!this.snapshotWaiter && !this.onState) || message.type !== 'broadcast' ||
         message.method !== 'thread-stream-state-changed' || message.sourceClientId !== this.owner ||
         message.params?.hostId !== 'local' || message.params?.conversationId !== this.threadId) return;
@@ -212,9 +218,14 @@ export function summarize({ state, revision }, turnId) {
   const output = (turn?.items ?? []).filter(item => item.type === 'agentMessage' && typeof item.text === 'string')
     .map(item => item.text).join('\n');
   const known = new Set(['inProgress', 'completed', 'interrupted', 'failed']);
+  const attention = attentionRequests(state, turn?.turnId);
   return { threadId: state.id, revision, runtimeStatus: state.threadRuntimeStatus?.type ?? 'unknown',
     turnId: turn?.turnId ?? null, status: turn ? (known.has(turn.status) ? turn.status : 'unknown') : 'unknown',
     turnFound: Boolean(turn), pendingRequests: Array.isArray(state.requests) ? state.requests.length : null,
     output: output.slice(-16000), outputTruncated: output.length > 16000,
-    hasError: Boolean(turn?.error), permissions: permissionSummary(state.currentPermissions), nextTurnPermissions: nextPermissions(state), threadUrl: `codex://threads/${state.id}` };
+    hasError: Boolean(turn?.error), attentionRequests: attention,
+    activity: attention.some(r => r.kind === 'approval') || state.threadRuntimeStatus?.activeFlags?.includes('waitingOnApproval') ? 'waiting_on_approval'
+      : attention.length || state.threadRuntimeStatus?.activeFlags?.includes('waitingOnUserInput') ? 'waiting_on_input'
+        : state.threadRuntimeStatus?.type === 'active' ? 'running' : state.threadRuntimeStatus?.type ?? 'unknown',
+    permissions: permissionSummary(state.currentPermissions), nextTurnPermissions: nextPermissions(state), threadUrl: `codex://threads/${state.id}` };
 }

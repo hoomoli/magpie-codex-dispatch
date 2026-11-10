@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { runHook, dispatchName, acceptedReceipt } from '../src/desktop-hook.js';
+import { runHook, dispatchName, acceptedReceipt, watchNotifications } from '../src/desktop-hook.js';
 import { configuration, install } from '../src/install-desktop.js';
 import { hash } from '../src/channel-store.js';
 import { spawnSync } from 'node:child_process';
@@ -115,4 +115,31 @@ test('installer writes private backups and does not duplicate registration', asy
   assert.equal(await readFile(first.backups[0], 'utf8'), original);
   const second = await install(home, '/plugin/src'); assert.equal(second.backups.length, 0);
   assert.equal(JSON.parse(await readFile(join(home, '.claude.json'))).existing, true);
+});
+
+
+test('watch transport recovery rearms the same binding without registering or dispatching', async () => {
+  const calls = []; let watches = 0;
+  const event = { eventId: 'stable-event', threadId: 'thread-1', turnId: 'turn-1', status: 'completed' };
+  const result = await watchNotifications(base.session_id, ['original-key'], async (session, method, args, options) => {
+    assert.equal(session, base.session_id); calls.push([method, args, options]);
+    if (method === 'hook_watch' && ++watches === 1) throw Object.assign(Error('transport lost'), { code: 'NOTIFICATION_DISCONNECTED' });
+    return method === 'hook_watch' ? { events: [event] } : { keys: ['original-key'] };
+  }, { delayMs: 0 });
+  assert.deepEqual(result.events, [event]);
+  assert.deepEqual(calls.map(c => c[0]), ['hook_watch', 'hook_resume', 'hook_watch']);
+  assert.deepEqual(calls[0][1], calls[2][1]);
+  assert.ok(calls[2][2].timeoutMs <= calls[0][2].timeoutMs);
+});
+
+test('logical watch errors and repeated transport loss terminate without resubmission', async () => {
+  let calls = 0;
+  await assert.rejects(watchNotifications(base.session_id, ['key'], async () => { calls++; throw Error('Invalid watch binding.'); }, { delayMs: 0 }));
+  assert.equal(calls, 1);
+  let watches = 0;
+  await assert.rejects(watchNotifications(base.session_id, ['key'], async (_session, method) => {
+    if (method === 'hook_watch') { watches++; throw Object.assign(Error('gone'), { code: 'NOTIFICATION_DISCONNECTED' }); }
+    return { keys: ['key'] };
+  }, { delayMs: 0, maxReconnects: 1 }), { code: 'NOTIFICATION_DISCONNECTED' });
+  assert.equal(watches, 2);
 });

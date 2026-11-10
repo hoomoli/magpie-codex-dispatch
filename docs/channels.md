@@ -23,7 +23,9 @@ Claude Code Channels are in research preview. The launcher explicitly requests t
 2. Existing dispatch journals protect against duplicate task submission. The worker records the accepted thread/turn IDs, then subscribes to the native desktop state stream. A task that already finished is detected in the initial snapshot.
 3. Ordered Immer patches update the snapshot. A revision gap, disconnect, or unknown protocol causes reconnection with backoff, never a successful completion. A healthy connection does not poll task status. The worker does not acquire the Codex thread writer or start another app-server.
 4. A terminal state (`completed`, `failed`, `interrupted`) creates a durable event for that exact thread and turn. Intermediate output and unrelated turns do not trigger review. The event carries identifiers and status, not instructions copied from task output.
-5. The stdio server pushes `notifications/claude/channel` into the originating Claude session. Claude reads the final result once, checks relevant changes/tests, and calls `codex_review_complete` with an explicit verdict and summary.
+5. The stdio server pushes `notifications/claude/channel` into the originating Claude session. Claude calls `codex_notification_result` with the event ID to read the exact final turn, checks relevant changes/tests, and calls `codex_review_complete` with an explicit verdict and summary.
+
+The worker rejects review before result retrieval and rejects a `passed` verdict for failed, interrupted, or errored execution. Result retrieval is read-only; it never dispatches work or answers approvals. The durable queue stores retrieval metadata, not final output.
 
 `codex_channel_status` reports `awaiting_receipt`, `watching`, `awaiting_review`, or `reviewed`. It is diagnostic, not a polling requirement. Creation/handoff can still return pending until native ownership is ready; retry the same creation request ID as directed. A missing/unknown receipt never causes automatic resubmission.
 
